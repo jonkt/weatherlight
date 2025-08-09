@@ -1,0 +1,13 @@
+{
+  "name": "busylight-weather",
+  "version": "1.0.0",
+  "description": "Busylight Weather App",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@pureit/busylight": "^1.0.12",
+    "axios": "^0.21.4"
+  }
+}

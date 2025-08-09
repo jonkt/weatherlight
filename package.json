@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "@pureit/busylight": "^1.0.12",
+    "axios": "^1.11.0",
     "electron": "^37.2.6"
   }
 }

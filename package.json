@@ -1,0 +1,17 @@
+{
+  "name": "weatherlight",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@pureit/busylight": "^1.0.12",
+    "electron": "^37.2.6"
+  }
+}

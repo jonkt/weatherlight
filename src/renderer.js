@@ -28,7 +28,7 @@ async function fetchWeather() {
     const apiKey = 'b27569d4ec5f5ca375c3ea7099c8847f'; // Replace with your OpenWeatherMap API key
     let city = userLocation;
     log(`Fetching weather for ${city}...`);
-    // Use OpenWeatherMap Geocoding API to get lat/lon
+    // Use Geocoding API to get lat/lon
     const geoResp = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(city)}&limit=1&appid=${apiKey}`,
       { timeout: 10000 });
     log('Geocoding API response:', geoResp.data);
@@ -37,18 +37,22 @@ async function fetchWeather() {
       return;
     }
     const { lat, lon, name, country } = geoResp.data[0];
-    // Use One Call API for hourly forecast
-    const forecastResp = await axios.get(`https://api.openweathermap.org/data/2.5/onecall?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`,
+    // Use 5-day / 3-hour forecast API
+    const forecastResp = await axios.get(`https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`,
       { timeout: 10000 });
     log('Forecast API response:', forecastResp.data);
-    const hourly = forecastResp.data.hourly;
+
+    // Extract the next hour's weather data
+    const hourly = forecastResp.data.list;
     if (!hourly || hourly.length === 0) {
       log('No hourly forecast data for', city);
       return;
     }
     const nextHour = hourly[0];
-    const temperature = nextHour.temp;
-    const hasPrecipitation = (nextHour.pop && nextHour.pop > 0.1) || (nextHour.rain && nextHour.rain['1h'] > 0) || (nextHour.snow && nextHour.snow['1h'] > 0);
+    const temperature = nextHour.main.temp;
+    const hasPrecipitation = (nextHour.pop && nextHour.pop > 0.1)
+                           || (nextHour.rain && nextHour.rain['3h'] > 0)
+                           || (nextHour.snow && nextHour.snow['3h'] > 0);
     log(`Forecast for ${name}, ${country}: temp=${temperature}°C, precipitation=${hasPrecipitation}`);
     setBusylightColor(temperature, hasPrecipitation, `${name}, ${country}`);
   } catch (error) {

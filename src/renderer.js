@@ -1,8 +1,7 @@
 const { ipcRenderer } = require('electron');
 const axios = require('axios');
 
-// Only declare location once
-var location = 'havelock north,nz';
+var userLocation = null;
 
 function log(...args) {
   ipcRenderer.send('renderer-log', ...args);
@@ -21,19 +20,27 @@ function setBusylightColor(temp, hasPrecipitation, city) {
 }
 
 async function fetchWeather() {
+  if (!userLocation) {
+    log('No location set. Waiting for user input.');
+    return;
+  }
   try {
     const apiKey = 'b27569d4ec5f5ca375c3ea7099c8847f'; // Replace with your OpenWeatherMap API key
-    let city = location;
+    let city = userLocation;
     log(`Fetching weather for ${city}...`);
     // Use OpenWeatherMap Geocoding API to get lat/lon
-    const geoResp = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(city)}&limit=1&appid=${apiKey}`);
+    const geoResp = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(city)}&limit=1&appid=${apiKey}`,
+      { timeout: 10000 });
+    log('Geocoding API response:', geoResp.data);
     if (!geoResp.data || geoResp.data.length === 0) {
       log('Could not find location:', city);
       return;
     }
     const { lat, lon, name, country } = geoResp.data[0];
     // Use One Call API for hourly forecast
-    const forecastResp = await axios.get(`https://api.openweathermap.org/data/2.5/onecall?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`);
+    const forecastResp = await axios.get(`https://api.openweathermap.org/data/2.5/onecall?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`,
+      { timeout: 10000 });
+    log('Forecast API response:', forecastResp.data);
     const hourly = forecastResp.data.hourly;
     if (!hourly || hourly.length === 0) {
       log('No hourly forecast data for', city);
@@ -45,22 +52,26 @@ async function fetchWeather() {
     log(`Forecast for ${name}, ${country}: temp=${temperature}°C, precipitation=${hasPrecipitation}`);
     setBusylightColor(temperature, hasPrecipitation, `${name}, ${country}`);
   } catch (error) {
-    log('Error fetching weather:', error);
+    log('Error fetching weather:', error.message || error);
+    if (error.response) {
+      log('Error response data:', error.response.data);
+    }
   }
 }
 
 async function updateLocation() {
-  location = await ipcRenderer.invoke('get-location');
+  userLocation = await ipcRenderer.invoke('get-location');
+  if (!userLocation) {
+    log('No location found in config. Please set your location from the tray.');
+    return;
+  }
   fetchWeather();
 }
 
 ipcRenderer.on('location-updated', (event, newLocation) => {
-  location = newLocation;
+  userLocation = newLocation;
   fetchWeather();
 });
-
-// For debugging: set light to red on startup, no weather logic
-ipcRenderer.send('set-busylight', { color: 'ff0000', pulse: false });
 
 updateLocation();
 setInterval(fetchWeather, 15 * 60 * 1000);

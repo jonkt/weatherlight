@@ -36,7 +36,7 @@ function createTray() {
 
 function createWindow() {
   win = new BrowserWindow({
-    show: true, // Set to true for debugging
+    show: false, // Hide the main window again
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
@@ -52,13 +52,15 @@ function openLocationPrompt() {
   }
   promptWin = new BrowserWindow({
     width: 350,
-    height: 150,
+    height: 180,
     resizable: false,
     minimizable: false,
     maximizable: false,
     parent: win,
     modal: true,
     show: true,
+    frame: false, // Frameless for elegance
+    alwaysOnTop: true,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false

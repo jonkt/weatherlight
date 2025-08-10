@@ -2,6 +2,7 @@ const { ipcRenderer } = require('electron');
 const axios = require('axios');
 
 var userLocation = null;
+let maxBrightness = 100; // Maximum brightness as a percentage
 
 function log(...args) {
   ipcRenderer.send('renderer-log', ...args);
@@ -9,7 +10,7 @@ function log(...args) {
 
 // Define temperature range and color steps
 const tempMin = -10;
-const tempMax = 40;
+const tempMax = 30;
 const steps = 50;
 
 // Create a color mapping from red to blue with 50 steps
@@ -26,7 +27,7 @@ function createColorGradient(steps) {
 
 const colorGradient = createColorGradient(steps);
 
-function setBusylightColor(temp, hasPrecipitation, city) {
+function setBusylightColor(temp, hasPrecipitation, city, intensity) {
   // Map temperature to a color step
   const tempRange = tempMax - tempMin;
   let colorIndex = Math.floor(((temp - tempMin) / tempRange) * (steps - 1));
@@ -34,8 +35,9 @@ function setBusylightColor(temp, hasPrecipitation, city) {
   if (colorIndex >= steps) colorIndex = steps - 1;
 
   const color = colorGradient[colorIndex];
-  log(`Setting Busylight for ${city}: temp=${temp}°C, precipitation=${hasPrecipitation}, color=${color}, pulse=${hasPrecipitation}`);
-  ipcRenderer.send('set-busylight', { color, pulse: hasPrecipitation });
+
+  log(`Setting Busylight for ${city}: temp=${temp}°C, precipitation=${hasPrecipitation}, color=${color}, intensity=${intensity}`);
+  ipcRenderer.send('set-busylight', { color, pulse: hasPrecipitation, intensity });
 }
 
 async function fetchWeather() {
@@ -44,7 +46,7 @@ async function fetchWeather() {
     return;
   }
   try {
-    const apiKey = '[REDACTED_API_KEY]'; 
+    const apiKey = '[REDACTED_API_KEY]'; // Replace with your OpenWeatherMap API key
     let city = userLocation;
     log(`Fetching weather for ${city}...`);
 
@@ -75,8 +77,22 @@ async function fetchWeather() {
                            || (nextHour.rain && nextHour.rain['3h'] > 0)
                            || (nextHour.snow && nextHour.snow['3h'] > 0);
 
+    // Get sunrise and sunset times
+    const sunrise = forecastResp.data.city.sunrise * 1000; // Convert to milliseconds
+    const sunset = forecastResp.data.city.sunset * 1000; // Convert to milliseconds
+    const now = Date.now();
+
+    let intensity;
+    if (now < sunrise) {
+      intensity = Math.max(0, Math.floor(maxBrightness * ((now - (sunrise - 3600000)) / 3600000))); // Increase from 0% to max brightness over 1 hour before sunrise
+    } else if (now > sunset) {
+      intensity = Math.max(0, Math.floor(maxBrightness * (((now + 3600000) - sunset) / 3600000))); // Decrease from max brightness to 0% over 1 hour after sunset
+    } else {
+      intensity = maxBrightness; // Full brightness during the day
+    }
+
     log(`Forecast for ${name}, ${country}: temp=${temperature}°C, precipitation=${hasPrecipitation}`);
-    setBusylightColor(temperature, hasPrecipitation, `${name}, ${country}`);
+    setBusylightColor(temperature, hasPrecipitation, `${name}, ${country}`, intensity);
   } catch (error) {
     log('Error fetching weather:', error.message || error);
     if (error.response) {
@@ -88,7 +104,7 @@ async function fetchWeather() {
 async function updateLocation() {
   userLocation = await ipcRenderer.invoke('get-location');
   if (!userLocation) {
-    log('No location found in settings. Please set your location from the tray.');
+    log('No location found in config. Please set your location from the tray.');
     return;
   }
   fetchWeather();

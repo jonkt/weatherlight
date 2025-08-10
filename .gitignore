@@ -1,0 +1,7 @@
+# Ignore the entire node_modules directory
+node_modules/
+
+# Ignore other common large or temporary files
+*.log
+*.temp
+*.DS_Store

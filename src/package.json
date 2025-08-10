@@ -2,7 +2,7 @@
   "name": "busylight-weather",
   "version": "1.0.0",
   "description": "Busylight Weather App",
-  "main": "main.js",
+  "main": "src/main.js",
   "scripts": {
     "start": "electron ."
   },

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Set Location</title>
+    <style>
+      body { font-family: sans-serif; margin: 20px; }
+      label, input { display: block; margin-bottom: 10px; }
+      button { margin-top: 10px; }
+    </style>
+  </head>
+  <body>
+    <label for="location">Enter location (postcode/city,country):</label>
+    <input id="location" type="text" autofocus />
+    <button id="save">Save</button>
+    <script>
+      const { ipcRenderer } = require('electron');
+      document.getElementById('save').onclick = () => {
+        const loc = document.getElementById('location').value.trim();
+        if (loc) ipcRenderer.send('set-location', loc);
+      };
+      document.getElementById('location').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') document.getElementById('save').click();
+      });
+    </script>
+  </body>
+</html>

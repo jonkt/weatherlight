@@ -1,9 +1,10 @@
 {
-  "name": "weatherlight",
+  "name": "busylight-weather",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Busylight Weather App",
+  "main": "src/main.js",
   "scripts": {
+    "start": "set ELECTRON_DISABLE_SECURITY_WARNINGS=true && electron .",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

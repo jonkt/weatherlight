@@ -1,63 +1,66 @@
+const { ipcRenderer } = require('electron');
 const axios = require('axios');
-const { Busylight } = require('@pureit/busylight');
 
-let busylight;
+// Only declare location once
+var location = 'havelock north,nz';
 
-async function initBusylight() {
-  const lights = await Busylight.findLights();
-  if (lights.length === 0) {
-    console.error('No Busylight found!');
-    return;
-  }
-  busylight = lights[0];
+function log(...args) {
+  ipcRenderer.send('renderer-log', ...args);
+}
+
+function setBusylightColor(temp, hasPrecipitation, city) {
+  let color;
+  if (temp < 0) color = '0000ff'; // blue
+  else if (temp < 15) color = '00ffff'; // cyan
+  else if (temp < 25) color = '00ff00'; // green
+  else if (temp < 30) color = 'ffff00'; // yellow
+  else color = 'ff0000'; // red;
+
+  log(`Setting Busylight for ${city}: temp=${temp}°C, precipitation=${hasPrecipitation}, color=${color}, pulse=${hasPrecipitation}`);
+  ipcRenderer.send('set-busylight', { color, pulse: hasPrecipitation });
 }
 
 async function fetchWeather() {
   try {
-    // Replace with your OpenWeatherMap API key
-    const apiKey = '[REDACTED_API_KEY]';
-    const city = 'havelock north';
-
-    const response = await axios.get(`https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=${apiKey}&units=metric`);
-    const data = response.data;
-
-    const temperature = data.main.temp;
-    const precipitationChance = data.weather.some(weather => weather.id < 700); // Simplified check for rain
-
-    setBusylightColor(temperature, precipitationChance);
+    const apiKey = '[REDACTED_API_KEY]'; // Replace with your OpenWeatherMap API key
+    let city = location;
+    log(`Fetching weather for ${city}...`);
+    // Use OpenWeatherMap Geocoding API to get lat/lon
+    const geoResp = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(city)}&limit=1&appid=${apiKey}`);
+    if (!geoResp.data || geoResp.data.length === 0) {
+      log('Could not find location:', city);
+      return;
+    }
+    const { lat, lon, name, country } = geoResp.data[0];
+    // Use One Call API for hourly forecast
+    const forecastResp = await axios.get(`https://api.openweathermap.org/data/2.5/onecall?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`);
+    const hourly = forecastResp.data.hourly;
+    if (!hourly || hourly.length === 0) {
+      log('No hourly forecast data for', city);
+      return;
+    }
+    const nextHour = hourly[0];
+    const temperature = nextHour.temp;
+    const hasPrecipitation = (nextHour.pop && nextHour.pop > 0.1) || (nextHour.rain && nextHour.rain['1h'] > 0) || (nextHour.snow && nextHour.snow['1h'] > 0);
+    log(`Forecast for ${name}, ${country}: temp=${temperature}°C, precipitation=${hasPrecipitation}`);
+    setBusylightColor(temperature, hasPrecipitation, `${name}, ${country}`);
   } catch (error) {
-    console.error('Error fetching weather:', error);
+    log('Error fetching weather:', error);
   }
 }
 
-function setBusylightColor(temp, hasPrecipitation) {
-  let color;
-
-  if (temp < 0) {
-    color = 'blue'; // Cold
-  } else if (temp >= 0 && temp < 15) {
-    color = 'cyan'; // Cool
-  } else if (temp >= 15 && temp < 25) {
-    color = 'green'; // Mild
-  } else if (temp >= 25 && temp < 30) {
-    color = 'yellow'; // Warm
-  } else {
-    color = 'red'; // Hot
-  }
-
-  busylight.setColor(color);
-
-  if (hasPrecipitation) {
-    busylight.pulse(1, 0.5); // Pulse for precipitation
-  } else {
-    busylight.stopPulse(); // Stop pulsing if no precipitation
-  }
+async function updateLocation() {
+  location = await ipcRenderer.invoke('get-location');
+  fetchWeather();
 }
 
-async function start() {
-  await initBusylight();
-  setInterval(fetchWeather, 60 * 60 * 1000); // Fetch weather every hour
-  fetchWeather(); // Initial fetch
-}
+ipcRenderer.on('location-updated', (event, newLocation) => {
+  location = newLocation;
+  fetchWeather();
+});
 
-start();
+// For debugging: set light to red on startup, no weather logic
+ipcRenderer.send('set-busylight', { color: 'ff0000', pulse: false });
+
+updateLocation();
+setInterval(fetchWeather, 15 * 60 * 1000);

@@ -1,41 +1,61 @@
-const { app, Tray, Menu, ipcMain, BrowserWindow, nativeImage } = require('electron');
+const { app, Tray, Menu, ipcMain, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const axios = require('axios');
 const busylightModule = require('../lib');
+const colorScale = require('./color-scale.js');
 
 let tray = null;
 let busylight = null;
-let win = null;
 let settingsWin = null;
 let sunTimes = { sunrise: null, sunset: null };
+let weatherInterval = null;
+
 const configPath = path.join(app.getPath('userData'), 'config.json');
 
+// --- Configuration Management ---
 function loadConfig() {
     try {
         if (fs.existsSync(configPath)) {
             const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            // Provide defaults for any missing essential settings
             return {
-                location: 'havelock north,nz',
+                location: '',
                 pulse: true,
                 pulseSpeed: 5000,
                 sunsetSunrise: false,
+                apiKey: '',
                 ...config
             };
         }
-    } catch (e) { console.error('Error loading config:', e); }
-    return { location: 'havelock north,nz', pulse: true, pulseSpeed: 5000, sunsetSunrise: false };
+    } catch (e) {
+        console.error('Error loading config:', e);
+    }
+    // Default config if file doesn't exist or is corrupt
+    return { location: '', pulse: true, pulseSpeed: 5000, sunsetSunrise: false, apiKey: '' };
 }
 
 function saveConfig(config) {
     try {
-        fs.writeFileSync(configPath, JSON.stringify(config));
-    } catch (e) { console.error('Error saving config:', e); }
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {
+        console.error('Error saving config:', e);
+    }
 }
+
+// --- Main Application Setup ---
+app.whenReady().then(() => {
+    createTray();
+    initializeBusylight();
+    startWeatherFetching();
+});
 
 function createTray() {
     tray = new Tray(path.join(__dirname, 'icon.png'));
     const contextMenu = Menu.buildFromTemplate([
+        { label: 'Refresh', click: fetchWeather },
         { label: 'Settings', click: openSettingsWindow },
+        { type: 'separator' },
         { label: 'Quit', click: () => app.quit() }
     ]);
     tray.setToolTip('Busylight Weather');
@@ -43,92 +63,95 @@ function createTray() {
     tray.on('double-click', openSettingsWindow);
 }
 
-function createWindow() {
-    win = new BrowserWindow({
-        show: false,
-        webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false
-        }
-    });
-    win.loadFile(path.join(__dirname, 'index.html'));
-}
-
-function openSettingsWindow() {
-    if (settingsWin) {
-        settingsWin.focus();
-        return;
-    }
-    settingsWin = new BrowserWindow({
-        width: 400,
-        height: 380,
-        resizable: false,
-        minimizable: false,
-        maximizable: false,
-        parent: win,
-        modal: true,
-        show: true,
-        alwaysOnTop: true,
-        webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false,
-            preload: path.join(__dirname, 'settings.js')
-        }
-    });
-    settingsWin.loadFile(path.join(__dirname, 'settings.html'));
-    settingsWin.setMenu(null);
-    settingsWin.on('closed', () => { settingsWin = null; });
-}
-
-function adjustBrightness(color, intensity) {
-    if (typeof color !== 'string' || color.length !== 6) {
-        return color;
-    }
-    const colorValue = parseInt(color, 16);
-    let r = (colorValue >> 16) & 255;
-    let g = (colorValue >> 8) & 255;
-    let b = colorValue & 255;
-
-    const factor = intensity / 100;
-    r = Math.round(r * factor);
-    g = Math.round(g * factor);
-    b = Math.round(b * factor);
-
-    return [r, g, b];
-}
-
-app.whenReady().then(() => {
-    createTray();
-    createWindow();
+function initializeBusylight() {
     try {
         busylight = busylightModule.get();
+        if (!busylight) {
+            console.error('Failed to get busylight instance.');
+            return;
+        }
         busylight.on('connected', () => console.log('Busylight connected.'));
         busylight.on('disconnected', () => console.log('Busylight disconnected.'));
         busylight.on('error', (err) => console.error('Busylight error:', err));
     } catch (e) {
         console.error('Failed to initialize Busylight:', e);
     }
-});
+}
 
-ipcMain.on('set-busylight', (event, { color, pulse, intensity, temp, hasPrecipitation, city, iconDataURL }) => {
-    console.log('IPC received: set-busylight', { color, pulse, intensity, temp, hasPrecipitation, city });
+// --- Weather Logic ---
+function startWeatherFetching() {
+    fetchWeather(); // Fetch immediately on start
+    if (weatherInterval) clearInterval(weatherInterval);
+    weatherInterval = setInterval(fetchWeather, 15 * 60 * 1000); // And every 15 minutes
+}
 
-    // Update tray icon
-    if (iconDataURL) {
-        const image = nativeImage.createFromDataURL(iconDataURL);
-        tray.setImage(image);
+async function fetchWeather() {
+    const config = loadConfig();
+    if (!config.location) {
+        console.log('No location set. Please set a location in Settings.');
+        tray.setToolTip('No location set');
+        return;
+    }
+    const { apiKey, location } = config;
+    if (!apiKey) {
+        console.log('No OpenWeatherMap API key set. Please set it in Settings.');
+        tray.setToolTip('No API key set');
+        return;
     }
 
-    // Update tray tooltip
-    const tooltipText = `${city} — ${temp.toFixed(1)}°C, rain ${hasPrecipitation ? 'expected' : 'not expected'}`;
-    tray.setToolTip(tooltipText);
+    console.log(`Fetching weather for ${config.location}...`);
 
+    try {
+        const geoResp = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(config.location)}&limit=1&appid=${apiKey}`, { timeout: 10000 });
+        if (!geoResp.data || geoResp.data.length === 0) {
+            console.log('Could not find location:', config.location);
+            tray.setToolTip(`Location not found: ${config.location}`);
+            return;
+        }
+        const { lat, lon, name, country } = geoResp.data[0];
+
+        const weatherResp = await axios.get(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`, { timeout: 10000 });
+        sunTimes = {
+            sunrise: new Date(weatherResp.data.sys.sunrise * 1000),
+            sunset: new Date(weatherResp.data.sys.sunset * 1000)
+        };
+
+        const forecastResp = await axios.get(`https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`, { timeout: 10000 });
+        const hourly = forecastResp.data.list;
+        if (!hourly || hourly.length === 0) {
+            console.log('No hourly forecast data for', config.location);
+            return;
+        }
+
+        const nextHour = hourly[0];
+        const temperature = nextHour.main.temp;
+        const hasPrecipitation = (nextHour.pop > 0.1) || (nextHour.rain && nextHour.rain['3h'] > 0) || (nextHour.snow && nextHour.snow['3h'] > 0);
+
+        console.log(`Forecast for ${name}, ${country}: temp=${temperature.toFixed(1)}°C, precipitation=${hasPrecipitation}`);
+        updateBusylight(temperature, hasPrecipitation, `${name}, ${country}`);
+
+    } catch (error) {
+        console.error('Error fetching weather:', error.message || error);
+        if (error.response) {
+            console.error('Error response data:', error.response.data);
+        }
+        tray.setToolTip('Error fetching weather');
+    }
+}
+
+// --- Busylight Control ---
+function updateBusylight(temp, hasPrecipitation, city) {
     if (!busylight) {
-        console.error('No busylight instance available in IPC handler.');
+        console.error('Busylight not initialized, cannot update.');
         return;
     }
 
     const config = loadConfig();
+    const tooltipText = `${city} — ${temp.toFixed(1)}°C, precipitation ${hasPrecipitation ? 'expected' : 'not expected'}`;
+    tray.setToolTip(tooltipText);
+    console.log('Updating tray tooltip:', tooltipText);
+
+    // Sunset/Sunrise check
     if (config.sunsetSunrise) {
         const now = new Date();
         if (sunTimes.sunrise && sunTimes.sunset) {
@@ -140,30 +163,57 @@ ipcMain.on('set-busylight', (event, { color, pulse, intensity, temp, hasPrecipit
         }
     }
 
-    const finalColor = adjustBrightness(color, intensity);
-    console.log('Adjusted color:', finalColor);
-
-    busylight.off();
-
-    if (pulse && config.pulse) {
-        const highPulseColor = finalColor.map(c => Math.round(c * 0.6));
-        const lowPulseColor = finalColor.map(c => Math.round(c * 0.3));
-        busylight.pulse([highPulseColor, lowPulseColor], config.pulseSpeed || 5000);
-        console.log('Busylight.pulse called with high color', highPulseColor, 'and low color', lowPulseColor);
+    // Determine color from temperature
+    let color = 'ffffff'; // Default to white
+    if (temp <= colorScale[0].temp) {
+        color = colorScale[0].color;
+    } else if (temp > colorScale[colorScale.length - 1].temp) {
+        color = colorScale[colorScale.length - 1].color;
     } else {
-        busylight.light(finalColor);
-        console.log('Busylight.light called with', finalColor);
+        for (let i = 1; i < colorScale.length; i++) {
+            if (temp <= colorScale[i].temp) {
+                color = colorScale[i - 1].color;
+                break;
+            }
+        }
     }
-});
+    console.log(`Determined color #${color} for temperature ${temp.toFixed(1)}°C`);
 
-ipcMain.on('renderer-log', (event, ...args) => {
-    console.log('[Renderer]', ...args);
-});
+    busylight.off(); // Turn off before applying new state
 
-ipcMain.on('sun-times', (event, times) => {
-    sunTimes.sunrise = new Date(times.sunrise);
-    sunTimes.sunset = new Date(times.sunset);
-});
+    if (hasPrecipitation && config.pulse) {
+        console.log(`Pulsing color #${color} with speed ${config.pulseSpeed}ms`);
+        busylight.pulse(color, config.pulseSpeed);
+    } else {
+        console.log(`Setting solid color #${color}`);
+        busylight.light(color);
+    }
+}
+
+
+// --- Settings Window ---
+function openSettingsWindow() {
+    if (settingsWin) {
+        settingsWin.focus();
+        return;
+    }
+    settingsWin = new BrowserWindow({
+        width: 400,
+        height: 420, // Adjusted for API key field
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        show: true,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false,
+            preload: path.join(__dirname, 'settings.js')
+        }
+    });
+    settingsWin.loadFile(path.join(__dirname, 'settings.html'));
+    settingsWin.setMenu(null);
+    settingsWin.on('closed', () => { settingsWin = null; });
+}
 
 ipcMain.handle('get-settings', () => {
     return loadConfig();
@@ -173,14 +223,17 @@ ipcMain.on('set-settings', (event, settings) => {
     const config = loadConfig();
     saveConfig({ ...config, ...settings });
     if (settingsWin) settingsWin.close();
-    if (win) win.webContents.send('settings-updated', settings);
+    // After saving new settings, fetch weather immediately
+    fetchWeather();
 });
 
 ipcMain.on('close-settings', () => {
     if (settingsWin) settingsWin.close();
 });
 
+// --- App Lifecycle ---
 app.on('window-all-closed', (e) => {
+    // Prevent app from quitting when settings window is closed
     e.preventDefault();
 });
 

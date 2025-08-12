@@ -38,13 +38,14 @@ function loadConfig() {
                 pulse: true,
                 pulseSpeed: 5000,
                 sunsetSunrise: false,
+                maxBrightness: 60, // Default to 60%
                 apiKey: '',
                 ...config
             };
         }
     } catch (e) { console.error('Error loading config:', e); }
     // Return a default config if the file doesn't exist or is invalid
-    return { location: '', pulse: true, pulseSpeed: 5000, sunsetSunrise: false, apiKey: '' };
+    return { location: '', pulse: true, pulseSpeed: 5000, sunsetSunrise: false, maxBrightness: 60, apiKey: '' };
 }
 
 /**
@@ -184,6 +185,20 @@ async function fetchWeather() {
 // --- Busylight Control ---
 
 /**
+ * Adjusts the brightness of a hex color.
+ * @param {string} hexColor The hex color string (e.g., 'ff0000').
+ * @param {number} brightness A percentage (1-100) to set the brightness.
+ * @returns {number[]} The adjusted [r, g, b] color array.
+ */
+function applyBrightness(hexColor, brightness) {
+    const factor = brightness / 100;
+    const r = parseInt(hexColor.substring(0, 2), 16);
+    const g = parseInt(hexColor.substring(2, 4), 16);
+    const b = parseInt(hexColor.substring(4, 6), 16);
+    return [Math.round(r * factor), Math.round(g * factor), Math.round(b * factor)];
+}
+
+/**
  * Updates the Busylight's state based on the current weather.
  * @param {number} temp The current temperature.
  * @param {boolean} hasPrecipitation Whether there is a forecast for precipitation.
@@ -196,6 +211,7 @@ function updateBusylight(temp, hasPrecipitation, city) {
     }
 
     const config = loadConfig();
+    const { maxBrightness } = config;
     const tooltipText = `${city} — ${temp.toFixed(1)}°C, ${hasPrecipitation ? 'rain forecast' : 'no rain forecast'}`;
     tray.setToolTip(tooltipText);
     console.log('Updating tray tooltip:', tooltipText);
@@ -234,17 +250,17 @@ function updateBusylight(temp, hasPrecipitation, city) {
     busylight.off(); // Turn off before setting new state
 
     if (hasPrecipitation && config.pulse) {
-        // If there's precipitation, pulse the light between 60% and 30% brightness
-        const baseColorRGB = [parseInt(color.substring(0, 2), 16), parseInt(color.substring(2, 4), 16), parseInt(color.substring(4, 6), 16)];
-        const highColor = baseColorRGB.map(c => Math.round(c * 0.6));
-        const lowColor = baseColorRGB.map(c => Math.round(c * 0.3));
+        // If there's precipitation, pulse the light
+        const highColor = applyBrightness(color, maxBrightness);
+        const lowColor = applyBrightness(color, maxBrightness / 2); // Pulse down to half brightness
 
         console.log(`Pulsing between [${highColor}] and [${lowColor}] with speed ${config.pulseSpeed}ms`);
         busylight.pulse([highColor, lowColor], config.pulseSpeed);
     } else {
-        // Otherwise, set a solid color
-        console.log(`Setting solid color #${color}`);
-        busylight.light(color);
+        // Otherwise, set a solid color with the max brightness
+        const finalColor = applyBrightness(color, maxBrightness);
+        console.log(`Setting solid color #${color} with brightness ${maxBrightness}% -> [${finalColor}]`);
+        busylight.light(finalColor);
     }
 }
 
@@ -260,7 +276,7 @@ function openSettingsWindow() {
     }
     settingsWin = new BrowserWindow({
         width: 400,
-        height: 420,
+        height: 480,
         resizable: false,
         minimizable: false,
         maximizable: false,

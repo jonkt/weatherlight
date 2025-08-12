@@ -15,6 +15,8 @@ const pulseInput = document.getElementById('pulse');
 const pulseSpeedContainer = document.getElementById('pulse-speed-container');
 const pulseSpeedInput = document.getElementById('pulseSpeed');
 const pulseSpeedValue = document.getElementById('pulseSpeedValue');
+const maxBrightnessInput = document.getElementById('maxBrightness');
+const maxBrightnessValue = document.getElementById('maxBrightnessValue');
 const sunsetSunriseInput = document.getElementById('sunsetSunrise');
 const saveButton = document.getElementById('save');
 const closeButton = document.getElementById('close');
@@ -66,6 +68,11 @@ pulseSpeedInput.addEventListener('input', () => {
     pulseSpeedValue.textContent = `${parseFloat(pulseSpeedInput.value).toFixed(1)}s`;
 });
 
+// Update the text display for the max brightness slider.
+maxBrightnessInput.addEventListener('input', () => {
+    maxBrightnessValue.textContent = `${maxBrightnessInput.value}%`;
+});
+
 // --- Load Initial Settings ---
 
 // When the window loads, request the current settings from the main process and populate the form.
@@ -81,6 +88,8 @@ ipcRenderer.invoke('get-settings').then(settings => {
 
     pulseSpeedInput.value = (settings.pulseSpeed || 5000) / 1000;
     pulseSpeedValue.textContent = `${parseFloat(pulseSpeedInput.value).toFixed(1)}s`;
+    maxBrightnessInput.value = settings.maxBrightness || 60;
+    maxBrightnessValue.textContent = `${maxBrightnessInput.value}%`;
     sunsetSunriseInput.checked = settings.sunsetSunrise || false;
 
     // If a location is already set, validate it on load.
@@ -98,6 +107,7 @@ saveButton.addEventListener('click', () => {
         apiKey: apiKeyInput.value.trim(),
         pulse: pulseInput.checked,
         pulseSpeed: Math.round(parseFloat(pulseSpeedInput.value) * 1000),
+        maxBrightness: parseInt(maxBrightnessInput.value, 10),
         sunsetSunrise: sunsetSunriseInput.checked
     };
     console.log('Sending settings to main process:', settings);

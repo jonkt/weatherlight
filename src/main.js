@@ -10,6 +10,7 @@ const fs = require('fs');
 const axios = require('axios');
 const busylightModule = require('../lib');
 const colorScale = require('./color-scale.js');
+const degamma = require('../lib/degamma.js');
 
 // --- Global Variables ---
 let tray = null;
@@ -105,6 +106,7 @@ function createIconWindow() {
 function initializeBusylight() {
     try {
         busylight = busylightModule.get();
+        busylight.degamma = false; // We will handle gamma correction manually
         busylight.on('connected', () => console.log('Busylight connected.'));
         busylight.on('disconnected', () => console.log('Busylight disconnected.'));
         busylight.on('error', (err) => console.error('Busylight error:', err));
@@ -250,17 +252,38 @@ function updateBusylight(temp, hasPrecipitation, city) {
     busylight.off(); // Turn off before setting new state
 
     if (hasPrecipitation && config.pulse) {
-        // If there's precipitation, pulse the light
-        const highColor = applyBrightness(color, maxBrightness);
-        const lowColor = applyBrightness(color, maxBrightness / 2); // Pulse down to half brightness
+        // If there's precipitation, pulse the light.
+        const highColorRgb = applyBrightness(color, maxBrightness);
+        const lowColorRgb = applyBrightness(color, maxBrightness / 2);
 
-        console.log(`Pulsing between [${highColor}] and [${lowColor}] with speed ${config.pulseSpeed}ms`);
-        busylight.pulse([highColor, lowColor], config.pulseSpeed);
+        const highColorDegamma = highColorRgb.map(degamma);
+        let lowColorDegamma = lowColorRgb.map(degamma);
+
+        // If the low color becomes black after correction, but the original color wasn't black,
+        // set it to a minimal non-black color to ensure the light doesn't turn off completely.
+        const isBlack = lowColorDegamma.every(c => c === 0);
+        const wasOriginallyBlack = color === '000000';
+        if (isBlack && !wasOriginallyBlack) {
+            lowColorDegamma = [0, 0, 1]; // Dim blue, perceptible on most devices
+        }
+
+        console.log(`Pulsing between [${highColorDegamma}] and [${lowColorDegamma}] with speed ${config.pulseSpeed}ms`);
+        busylight.pulse([highColorDegamma, lowColorDegamma], config.pulseSpeed);
     } else {
-        // Otherwise, set a solid color with the max brightness
-        const finalColor = applyBrightness(color, maxBrightness);
-        console.log(`Setting solid color #${color} with brightness ${maxBrightness}% -> [${finalColor}]`);
-        busylight.light(finalColor);
+        // Otherwise, set a solid color with the max brightness.
+        const finalColorRgb = applyBrightness(color, maxBrightness);
+        let finalColorDegamma = finalColorRgb.map(degamma);
+
+        // If the color becomes black after correction, but it wasn't originally black,
+        // set it to a minimal non-black color to ensure the light is still visibly on.
+        const isBlack = finalColorDegamma.every(c => c === 0);
+        const wasOriginallyBlack = color === '000000';
+        if (isBlack && !wasOriginallyBlack) {
+            finalColorDegamma = [0, 0, 1]; // Dim blue
+        }
+
+        console.log(`Setting solid color #${color} with brightness ${maxBrightness}% -> [${finalColorDegamma}]`);
+        busylight.light(finalColorDegamma);
     }
 }
 

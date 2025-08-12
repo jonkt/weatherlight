@@ -116,7 +116,7 @@ ipcMain.on('set-busylight', async (event, { color, pulse, intensity, temp, hasPr
 
     // Update tray icon
     try {
-        const image = new Jimp(16, 16, `#${color}ff`);
+        const image = await Jimp.create(16, 16, `#${color}ff`);
         const buffer = await image.getBufferAsync(Jimp.MIME_PNG);
         const nativeImg = nativeImage.createFromBuffer(buffer);
         tray.setImage(nativeImg);

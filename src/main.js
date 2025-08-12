@@ -1,4 +1,4 @@
-const { app, Tray, Menu, ipcMain, BrowserWindow } = require('electron');
+const { app, Tray, Menu, ipcMain, BrowserWindow, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
@@ -8,6 +8,7 @@ const colorScale = require('./color-scale.js');
 let tray = null;
 let busylight = null;
 let settingsWin = null;
+let iconWin = null; // Window for generating icons
 let sunTimes = { sunrise: null, sunset: null };
 let weatherInterval = null;
 
@@ -18,7 +19,6 @@ function loadConfig() {
     try {
         if (fs.existsSync(configPath)) {
             const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            // Provide defaults for any missing essential settings
             return {
                 location: '',
                 pulse: true,
@@ -28,24 +28,20 @@ function loadConfig() {
                 ...config
             };
         }
-    } catch (e) {
-        console.error('Error loading config:', e);
-    }
-    // Default config if file doesn't exist or is corrupt
+    } catch (e) { console.error('Error loading config:', e); }
     return { location: '', pulse: true, pulseSpeed: 5000, sunsetSunrise: false, apiKey: '' };
 }
 
 function saveConfig(config) {
     try {
         fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    } catch (e) {
-        console.error('Error saving config:', e);
-    }
+    } catch (e) { console.error('Error saving config:', e); }
 }
 
 // --- Main Application Setup ---
 app.whenReady().then(() => {
     createTray();
+    createIconWindow();
     initializeBusylight();
     startWeatherFetching();
 });
@@ -63,26 +59,31 @@ function createTray() {
     tray.on('double-click', openSettingsWindow);
 }
 
+function createIconWindow() {
+    iconWin = new BrowserWindow({
+        show: false, // This window is never shown
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false
+        }
+    });
+    iconWin.loadFile(path.join(__dirname, 'icon_generator.html'));
+}
+
 function initializeBusylight() {
     try {
         busylight = busylightModule.get();
-        if (!busylight) {
-            console.error('Failed to get busylight instance.');
-            return;
-        }
         busylight.on('connected', () => console.log('Busylight connected.'));
         busylight.on('disconnected', () => console.log('Busylight disconnected.'));
         busylight.on('error', (err) => console.error('Busylight error:', err));
-    } catch (e) {
-        console.error('Failed to initialize Busylight:', e);
-    }
+    } catch (e) { console.error('Failed to initialize Busylight:', e); }
 }
 
 // --- Weather Logic ---
 function startWeatherFetching() {
-    fetchWeather(); // Fetch immediately on start
+    fetchWeather();
     if (weatherInterval) clearInterval(weatherInterval);
-    weatherInterval = setInterval(fetchWeather, 15 * 60 * 1000); // And every 15 minutes
+    weatherInterval = setInterval(fetchWeather, 15 * 60 * 1000);
 }
 
 async function fetchWeather() {
@@ -92,7 +93,7 @@ async function fetchWeather() {
         tray.setToolTip('No location set');
         return;
     }
-    const { apiKey, location } = config;
+    const { apiKey } = config;
     if (!apiKey) {
         console.log('No OpenWeatherMap API key set. Please set it in Settings.');
         tray.setToolTip('No API key set');
@@ -132,9 +133,7 @@ async function fetchWeather() {
 
     } catch (error) {
         console.error('Error fetching weather:', error.message || error);
-        if (error.response) {
-            console.error('Error response data:', error.response.data);
-        }
+        if (error.response) console.error('Error response data:', error.response.data);
         tray.setToolTip('Error fetching weather');
     }
 }
@@ -151,20 +150,16 @@ function updateBusylight(temp, hasPrecipitation, city) {
     tray.setToolTip(tooltipText);
     console.log('Updating tray tooltip:', tooltipText);
 
-    // Sunset/Sunrise check
     if (config.sunsetSunrise) {
         const now = new Date();
-        if (sunTimes.sunrise && sunTimes.sunset) {
-            if (now < sunTimes.sunrise || now > sunTimes.sunset) {
-                busylight.off();
-                console.log('Turning off light due to sunset/sunrise setting.');
-                return;
-            }
+        if (sunTimes.sunrise && sunTimes.sunset && (now < sunTimes.sunrise || now > sunTimes.sunset)) {
+            busylight.off();
+            console.log('Turning off light due to sunset/sunrise setting.');
+            return;
         }
     }
 
-    // Determine color from temperature
-    let color = 'ffffff'; // Default to white
+    let color = 'ffffff';
     if (temp <= colorScale[0].temp) {
         color = colorScale[0].color;
     } else if (temp > colorScale[colorScale.length - 1].temp) {
@@ -179,7 +174,11 @@ function updateBusylight(temp, hasPrecipitation, city) {
     }
     console.log(`Determined color #${color} for temperature ${temp.toFixed(1)}°C`);
 
-    busylight.off(); // Turn off before applying new state
+    if (iconWin) {
+        iconWin.webContents.send('set-icon-color', color);
+    }
+
+    busylight.off();
 
     if (hasPrecipitation && config.pulse) {
         console.log(`Pulsing color #${color} with speed ${config.pulseSpeed}ms`);
@@ -190,7 +189,6 @@ function updateBusylight(temp, hasPrecipitation, city) {
     }
 }
 
-
 // --- Settings Window ---
 function openSettingsWindow() {
     if (settingsWin) {
@@ -199,7 +197,7 @@ function openSettingsWindow() {
     }
     settingsWin = new BrowserWindow({
         width: 400,
-        height: 420, // Adjusted for API key field
+        height: 420,
         resizable: false,
         minimizable: false,
         maximizable: false,
@@ -215,6 +213,7 @@ function openSettingsWindow() {
     settingsWin.on('closed', () => { settingsWin = null; });
 }
 
+// --- IPC Handlers ---
 ipcMain.handle('get-settings', () => {
     return loadConfig();
 });
@@ -223,7 +222,6 @@ ipcMain.on('set-settings', (event, settings) => {
     const config = loadConfig();
     saveConfig({ ...config, ...settings });
     if (settingsWin) settingsWin.close();
-    // After saving new settings, fetch weather immediately
     fetchWeather();
 });
 
@@ -231,9 +229,40 @@ ipcMain.on('close-settings', () => {
     if (settingsWin) settingsWin.close();
 });
 
+ipcMain.on('icon-data-url', (event, dataURL) => {
+    if (tray) {
+        const image = nativeImage.createFromDataURL(dataURL);
+        tray.setImage(image);
+        console.log('Tray icon updated.');
+    }
+});
+
+ipcMain.handle('validate-location', async (event, location) => {
+    console.log('Validating location:', location);
+    const config = loadConfig();
+    if (!config.apiKey) {
+        return { valid: false, error: 'API key is not set.' };
+    }
+    try {
+        const geoResp = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(location)}&limit=1&appid=${config.apiKey}`, { timeout: 10000 });
+        if (geoResp.data && geoResp.data.length > 0) {
+            const { name, country, state } = geoResp.data[0];
+            const locationParts = [name, state, country].filter(Boolean);
+            const validatedName = locationParts.join(', ');
+            console.log('Location validated:', validatedName);
+            return { valid: true, name: validatedName };
+        } else {
+            console.log('Location not found.');
+            return { valid: false, error: 'Location not found.' };
+        }
+    } catch (error) {
+        console.error('Error validating location:', error.message);
+        return { valid: false, error: 'Failed to connect to API.' };
+    }
+});
+
 // --- App Lifecycle ---
 app.on('window-all-closed', (e) => {
-    // Prevent app from quitting when settings window is closed
     e.preventDefault();
 });
 

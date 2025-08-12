@@ -1,6 +1,7 @@
 const { app, Tray, Menu, ipcMain, BrowserWindow, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const Jimp = require('jimp');
 const busylightModule = require('../lib');
 
 let tray = null;
@@ -110,13 +111,19 @@ app.whenReady().then(() => {
     }
 });
 
-ipcMain.on('set-busylight', (event, { color, pulse, intensity, temp, hasPrecipitation, city }) => {
+ipcMain.on('set-busylight', async (event, { color, pulse, intensity, temp, hasPrecipitation, city }) => {
     console.log('IPC received: set-busylight', { color, pulse, intensity, temp, hasPrecipitation, city });
 
     // Update tray icon
-    const image = nativeImage.createFromDataURL('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==');
-    const resizedImage = image.resize({ width: 16, height: 16, quality: 'best' });
-    tray.setImage(resizedImage);
+    try {
+        const image = new Jimp(16, 16, `#${color}ff`);
+        const buffer = await image.getBufferAsync(Jimp.MIME_PNG);
+        const nativeImg = nativeImage.createFromBuffer(buffer);
+        tray.setImage(nativeImg);
+    } catch (err) {
+        console.error('Failed to create icon:', err);
+    }
+
 
     // Update tray tooltip
     const tooltipText = `${city} — ${temp.toFixed(1)}°C, rain ${hasPrecipitation ? 'expected' : 'not expected'}`;

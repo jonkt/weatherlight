@@ -83,13 +83,19 @@ async function fetchWeather() {
     const now = Date.now();
 
     let intensity;
+    const oneHour = 3600000; // milliseconds in one hour
     if (now < sunrise) {
-      intensity = Math.max(0, Math.floor(maxBrightness * ((now - (sunrise - 3600000)) / 3600000))); // Increase from 0% to max brightness over 1 hour before sunrise
+      // Fading in for an hour before sunrise
+      intensity = Math.floor(maxBrightness * (now - (sunrise - oneHour)) / oneHour);
     } else if (now > sunset) {
-      intensity = Math.max(0, Math.floor(maxBrightness * (((now + 3600000) - sunset) / 3600000))); // Decrease from max brightness to 0% over 1 hour after sunset
+      // Fading out for an hour after sunset
+      intensity = Math.floor(maxBrightness * (1 - (now - sunset) / oneHour));
     } else {
-      intensity = maxBrightness; // Full brightness during the day
+      // Daytime
+      intensity = maxBrightness;
     }
+    // Clamp the intensity value between 0 and maxBrightness
+    intensity = Math.max(0, Math.min(maxBrightness, intensity));
 
     log(`Forecast for ${name}, ${country}: temp=${temperature}°C, precipitation=${hasPrecipitation}`);
     setBusylightColor(temperature, hasPrecipitation, `${name}, ${country}`, intensity);

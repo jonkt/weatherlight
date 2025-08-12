@@ -8,33 +8,27 @@ function log(...args) {
   ipcRenderer.send('renderer-log', ...args);
 }
 
-// Define temperature range and color steps
-const tempMin = -10;
-const tempMax = 30;
-const steps = 50;
-
-// Create a color mapping from red to blue with 50 steps
-function createColorGradient(steps) {
-  const colors = [];
-  for (let i = 0; i < steps; i++) {
-    const r = Math.floor(255 * (1 - i / (steps - 1)));
-    const g = Math.floor(255 * (i / (steps - 1)));
-    const b = 0;
-    colors.push(`${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`);
-  }
-  return colors;
-}
-
-const colorGradient = createColorGradient(steps);
+const colorScale = require('./color-scale.js');
 
 function setBusylightColor(temp, hasPrecipitation, city, intensity) {
-  // Map temperature to a color step
-  const tempRange = tempMax - tempMin;
-  let colorIndex = Math.floor(((temp - tempMin) / tempRange) * (steps - 1));
-  if (colorIndex < 0) colorIndex = 0;
-  if (colorIndex >= steps) colorIndex = steps - 1;
+  // Find the correct color from the new scale
+  let color = 'ffffff'; // Default to white
+  // if temp is lower than the first temp in the scale, use the first color
+  if (temp <= colorScale[0].temp) {
+    color = colorScale[0].color;
+  } else {
+    for (let i = 1; i < colorScale.length; i++) {
+      if (temp <= colorScale[i].temp) {
+        color = colorScale[i-1].color;
+        break;
+      }
+    }
+  }
+  // if temp is higher than the last temp in the scale, use the last color
+  if (temp > colorScale[colorScale.length - 1].temp) {
+    color = colorScale[colorScale.length - 1].color;
+  }
 
-  const color = colorGradient[colorIndex];
 
   log(`Setting Busylight for ${city}: temp=${temp}°C, precipitation=${hasPrecipitation}, color=${color}, intensity=${intensity}`);
   ipcRenderer.send('set-busylight', { color, pulse: hasPrecipitation, intensity });

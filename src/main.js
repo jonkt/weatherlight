@@ -60,14 +60,13 @@ function openSettingsWindow() {
     }
     settingsWin = new BrowserWindow({
         width: 400,
-        height: 300,
+        height: 380,
         resizable: false,
         minimizable: false,
         maximizable: false,
         parent: win,
         modal: true,
         show: true,
-        frame: false,
         alwaysOnTop: true,
         webPreferences: {
             nodeIntegration: true,

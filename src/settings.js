@@ -22,12 +22,15 @@ async function validateLocation() {
     try {
         const geoResp = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(loc)}&limit=1&appid=${apiKey}`);
         if (geoResp.data && geoResp.data.length > 0) {
-            locationStatus.textContent = '✔';
+            locationStatus.textContent = '✔ Location set';
+            locationStatus.style.color = 'green';
         } else {
-            locationStatus.textContent = '✖';
+            locationStatus.textContent = '✖ Location not recognized';
+            locationStatus.style.color = 'red';
         }
     } catch (e) {
-        locationStatus.textContent = '✖';
+        locationStatus.textContent = '✖ Location not recognized';
+        locationStatus.style.color = 'red';
     }
 }
 

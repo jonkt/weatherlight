@@ -120,8 +120,9 @@ ipcMain.on('set-busylight', (event, { color, pulse, intensity }) => {
   busylight.off();
 
   if (pulse) {
-    busylight.pulse([finalColor, [0, 0, 0]], 2500); // Pulse between color and off. 2500ms for each part of the pulse.
-    console.log('Busylight.pulse called with', finalColor);
+    const dimColor = finalColor.map(c => Math.round(c * 0.2)); // Dim to 20%
+    busylight.pulse([finalColor, dimColor], 5000); // Pulse between bright and dim. 5000ms for each part.
+    console.log('Busylight.pulse called with', finalColor, 'and dim color', dimColor);
   } else {
     busylight.light(finalColor);
     console.log('Busylight.light called with', finalColor);

@@ -77,25 +77,7 @@ async function fetchWeather() {
                            || (nextHour.rain && nextHour.rain['3h'] > 0)
                            || (nextHour.snow && nextHour.snow['3h'] > 0);
 
-    // Get sunrise and sunset times
-    const sunrise = forecastResp.data.city.sunrise * 1000; // Convert to milliseconds
-    const sunset = forecastResp.data.city.sunset * 1000; // Convert to milliseconds
-    const now = Date.now();
-
-    let intensity;
-    const oneHour = 3600000; // milliseconds in one hour
-    if (now < sunrise) {
-      // Fading in for an hour before sunrise
-      intensity = Math.floor(maxBrightness * (now - (sunrise - oneHour)) / oneHour);
-    } else if (now > sunset) {
-      // Fading out for an hour after sunset
-      intensity = Math.floor(maxBrightness * (1 - (now - sunset) / oneHour));
-    } else {
-      // Daytime
-      intensity = maxBrightness;
-    }
-    // Clamp the intensity value between 0 and maxBrightness
-    intensity = Math.max(0, Math.min(maxBrightness, intensity));
+    const intensity = maxBrightness;
 
     log(`Forecast for ${name}, ${country}: temp=${temperature}°C, precipitation=${hasPrecipitation}`);
     setBusylightColor(temperature, hasPrecipitation, `${name}, ${country}`, intensity);

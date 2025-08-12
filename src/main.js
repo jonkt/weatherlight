@@ -75,6 +75,7 @@ function openSettingsWindow() {
         }
     });
     settingsWin.loadFile(path.join(__dirname, 'settings.html'));
+    settingsWin.setMenu(null);
     settingsWin.on('closed', () => { settingsWin = null; });
 }
 

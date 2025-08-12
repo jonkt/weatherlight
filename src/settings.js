@@ -13,14 +13,37 @@ const closeButton = document.getElementById('close');
 
 const apiKey = '[REDACTED_API_KEY]';
 
+const countryAcronyms = {
+    'UK': 'United Kingdom',
+    'USA': 'United States',
+    'US': 'United States',
+    'UAE': 'United Arab Emirates'
+};
+
+function expandCountry(locationString) {
+    const parts = locationString.split(',').map(p => p.trim());
+    if (parts.length > 1) {
+        const countryPart = parts[parts.length - 1].toUpperCase();
+        if (countryAcronyms[countryPart]) {
+            parts[parts.length - 1] = countryAcronyms[countryPart];
+            return parts.join(', ');
+        }
+    }
+    return locationString;
+}
+
 async function validateLocation() {
-    const loc = locationInput.value.trim();
-    if (!loc) {
+    const originalLoc = locationInput.value.trim();
+    if (!originalLoc) {
         locationStatus.textContent = '';
         return;
     }
+
+    const expandedLoc = expandCountry(originalLoc);
+    locationInput.value = expandedLoc;
+
     try {
-        const geoResp = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(loc)}&limit=1&appid=${apiKey}`);
+        const geoResp = await axios.get(`https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(expandedLoc)}&limit=1&appid=${apiKey}`);
         if (geoResp.data && geoResp.data.length > 0) {
             locationStatus.textContent = '✔ Location set';
             locationStatus.style.color = 'green';
@@ -62,8 +85,10 @@ ipcRenderer.invoke('get-settings').then(settings => {
 });
 
 saveButton.addEventListener('click', () => {
+    const finalLocation = expandCountry(locationInput.value);
+    locationInput.value = finalLocation;
     const settings = {
-        location: locationInput.value,
+        location: finalLocation,
         pulse: pulseInput.checked,
         pulseSpeed: Math.round(parseFloat(pulseSpeedInput.value) * 1000),
         sunsetSunrise: sunsetSunriseInput.checked

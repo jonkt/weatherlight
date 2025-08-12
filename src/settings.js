@@ -13,7 +13,6 @@ const saveButton = document.getElementById('save');
 const closeButton = document.getElementById('close');
 
 // --- Location Validation ---
-let validationTimeout;
 async function validateLocation() {
     const loc = locationInput.value.trim();
     if (!loc) {
@@ -36,10 +35,13 @@ async function validateLocation() {
 }
 
 // --- Event Listeners ---
-locationInput.addEventListener('input', () => {
-    clearTimeout(validationTimeout);
-    validationTimeout = setTimeout(validateLocation, 500); // Debounce validation
+locationInput.addEventListener('blur', validateLocation);
+locationInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        validateLocation();
+    }
 });
+
 
 pulseInput.addEventListener('change', () => {
     pulseSpeedContainer.style.display = pulseInput.checked ? 'block' : 'none';

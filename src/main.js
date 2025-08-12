@@ -146,7 +146,7 @@ function updateBusylight(temp, hasPrecipitation, city) {
     }
 
     const config = loadConfig();
-    const tooltipText = `${city} — ${temp.toFixed(1)}°C, precipitation ${hasPrecipitation ? 'expected' : 'not expected'}`;
+    const tooltipText = `${city} — ${temp.toFixed(1)}°C, ${hasPrecipitation ? 'rain forecast' : 'no rain forecast'}`;
     tray.setToolTip(tooltipText);
     console.log('Updating tray tooltip:', tooltipText);
 
@@ -181,8 +181,15 @@ function updateBusylight(temp, hasPrecipitation, city) {
     busylight.off();
 
     if (hasPrecipitation && config.pulse) {
-        console.log(`Pulsing color #${color} with speed ${config.pulseSpeed}ms`);
-        busylight.pulse(color, config.pulseSpeed);
+        // First, parse the hex color to an RGB array
+        const baseColorRGB = [parseInt(color.substring(0, 2), 16), parseInt(color.substring(2, 4), 16), parseInt(color.substring(4, 6), 16)];
+
+        // Calculate high and low colors based on brightness percentages
+        const highColor = baseColorRGB.map(c => Math.round(c * 0.6));
+        const lowColor = baseColorRGB.map(c => Math.round(c * 0.3));
+
+        console.log(`Pulsing between [${highColor}] and [${lowColor}] with speed ${config.pulseSpeed}ms`);
+        busylight.pulse([highColor, lowColor], config.pulseSpeed);
     } else {
         console.log(`Setting solid color #${color}`);
         busylight.light(color);

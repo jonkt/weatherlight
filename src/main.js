@@ -120,8 +120,8 @@ ipcMain.on('set-busylight', (event, { color, pulse, intensity }) => {
   busylight.off();
 
   if (pulse) {
-    busylight.blink([finalColor, [0, 0, 0]], 500); // Blink between color and off every 500ms
-    console.log('Busylight.blink called with', finalColor);
+    busylight.pulse([finalColor, [0, 0, 0]], 2500); // Pulse between color and off. 2500ms for each part of the pulse.
+    console.log('Busylight.pulse called with', finalColor);
   } else {
     busylight.light(finalColor);
     console.log('Busylight.light called with', finalColor);

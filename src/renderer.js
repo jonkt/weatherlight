@@ -11,6 +11,16 @@ function log(...args) {
 
 const colorScale = require('./color-scale.js');
 
+function createIconDataURL(color) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 16;
+    canvas.height = 16;
+    const context = canvas.getContext('2d');
+    context.fillStyle = `#${color}`;
+    context.fillRect(0, 0, 16, 16);
+    return canvas.toDataURL('image/png');
+}
+
 function setBusylightColor(temp, hasPrecipitation, city, intensity) {
     let color = 'ffffff'; // Default to white
     if (temp <= colorScale[0].temp) {
@@ -27,14 +37,17 @@ function setBusylightColor(temp, hasPrecipitation, city, intensity) {
         color = colorScale[colorScale.length - 1].color;
     }
 
+    const iconDataURL = createIconDataURL(color);
+
     log(`Setting Busylight for ${city}: temp=${temp}°C, precipitation=${hasPrecipitation}, color=${color}, intensity=${intensity}`);
     ipcRenderer.send('set-busylight', {
-        color,
         pulse: hasPrecipitation,
         intensity,
         temp,
         hasPrecipitation,
-        city
+        city,
+        iconDataURL,
+        color // Still send color for the light itself
     });
 }
 

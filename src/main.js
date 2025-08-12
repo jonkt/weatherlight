@@ -3,46 +3,6 @@ const path = require('path');
 const fs = require('fs');
 const busylightModule = require('../lib');
 
-const colorToPngMap = {
-  'fefefe': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
-  'fafafa': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/+vhHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  'f3f3f3': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5ehHgAHggJ/PchI7wAAAABJRU5ErkJggg==',
-  'ebebeb': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8+Z+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  'e2e2e2': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8+J+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  'd8d9da': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP89Z+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  'cdcece': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP89Z+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  'c1c2c9': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP81Z+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  'b4b7c1': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8xZ+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  'a7abbb': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8pZ+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  '999eb2': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8pZ+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  '8a91aa': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8hp+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  '7a83a2': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8hp+hHgAHiwI/fchI7wAAAABJRU5ErkJggg==',
-  '1c4195': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYFAIAAADAHgA/eUAAAAASUVORK5CYII=',
-  '1c4f9e': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '1d5da6': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '1e6cad': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '217cb4': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '258cb9': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '2a9cbd': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '33acbc': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '3fb2ae': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '53b79d': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '71b989': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  '96b975': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  'bdb662': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  'dda951': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  'e49344': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  'e77e3c': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
-  'e86b38': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8Z2D4jwAFOAH+Vj3iIwAAAABJRU5ErkJggg==',
-  'e75837': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8Z2D4jwAFOAH+Vj3iIwAAAABJRU5ErkJggg==',
-  'e44638': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8Z2D4jwAFOAH+Vj3iIwAAAABJRU5ErkJggg==',
-  'de353a': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8Z2D4jwAFOAH+Vj3iIwAAAABJRU5ErkJggg==',
-  'd12e3e': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8r+PeEgAG7gJ8l42e1QAAAABJRU5ErkJggg==',
-  'c12a3f': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8r+PeEgAG7gJ8l42e1QAAAABJRU5ErkJggg==',
-  'aa273f': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8r+PeEgAG7gJ8l42e1QAAAABJRU5ErkJggg==',
-  '8e243e': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8r+PeEgAG7gJ8l42e1QAAAABJRU5ErkJggg==',
-};
-
 let tray = null;
 let busylight = null;
 let win = null;
@@ -150,15 +110,13 @@ app.whenReady().then(() => {
     }
 });
 
-ipcMain.on('set-busylight', (event, { color, pulse, intensity, temp, hasPrecipitation, city }) => {
+ipcMain.on('set-busylight', (event, { color, pulse, intensity, temp, hasPrecipitation, city, iconDataURL }) => {
     console.log('IPC received: set-busylight', { color, pulse, intensity, temp, hasPrecipitation, city });
 
     // Update tray icon
-    const dataUrl = colorToPngMap[color] || colorToPngMap['fefefe']; // Fallback to white
-    if (dataUrl) {
-        const image = nativeImage.createFromDataURL(dataUrl);
-        const resizedImage = image.resize({ width: 16, height: 16 });
-        tray.setImage(resizedImage);
+    if (iconDataURL) {
+        const image = nativeImage.createFromDataURL(iconDataURL);
+        tray.setImage(image);
     }
 
     // Update tray tooltip

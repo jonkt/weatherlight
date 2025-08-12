@@ -1,8 +1,47 @@
 const { app, Tray, Menu, ipcMain, BrowserWindow, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const Jimp = require('jimp');
 const busylightModule = require('../lib');
+
+const colorToPngMap = {
+  'fefefe': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wcAAwAB/epv2AAAAABJRU5ErkJggg==',
+  'fafafa': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwAB/aurHAAAAABJRU5ErkJggg==',
+  'f3f3f3': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/58BAwAB/IYvZwAAAABJRU5ErkJggg==',
+  'ebebeb': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8+Z8BAwAB/IflTTgAAAAASUVORK5CYII=',
+  'e2e2e2': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8+R8BAwAB/CfrnAAAAABJRU5ErkJggg==',
+  'd8d9da': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP89h8BAwAB/DX39AAAAABJRU5ErkJggg==',
+  'cdcece': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP89R8BAwAB/A3/eAAAAABJRU5ErkJggg==',
+  'c1c2c9': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP81R8BAwAB/bH4eAAAAABJRU5ErkJggg==',
+  'b4b7c1': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8xR8BAwAB/Zz4ewAAAABJRU5ErkJggg==',
+  'a7abbb': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8pR8BAwAB/Vz4fwAAAABJRU5ErkJggg==',
+  '999eb2': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8ph8BAwAB/Uj4gAAAAABJRU5ErkJggg==',
+  '8a91aa': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8hh8BAwAB/aj4gwAAAABJRU5ErkJggg==',
+  '7a83a2': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8hh8BAwAB/aj4gwAAAABJRU5ErkJggg==',
+  '1c4195': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYFAIAAADAHgA/eUAAAAASUVORK5CYII=',
+  '1c4f9e': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '1d5da6': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '1e6cad': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '217cb4': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '258cb9': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '2a9cbd': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '33acbc': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '3fb2ae': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '53b79d': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '71b989': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '96b975': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'bdb662': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'dda951': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'e49344': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'e77e3c': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'e86b38': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'e75837': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'e44638': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'de353a': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'd12e3e': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwcaAAAAcs/9HAAAAABJRU5ErkJggg==',
+  'c12a3f': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  'aa273f': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+  '8e243e': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYfj/PwAATwH+j2msywAAAABJRU5ErkJggg==',
+};
 
 let tray = null;
 let busylight = null;
@@ -111,19 +150,16 @@ app.whenReady().then(() => {
     }
 });
 
-ipcMain.on('set-busylight', async (event, { color, pulse, intensity, temp, hasPrecipitation, city }) => {
+ipcMain.on('set-busylight', (event, { color, pulse, intensity, temp, hasPrecipitation, city }) => {
     console.log('IPC received: set-busylight', { color, pulse, intensity, temp, hasPrecipitation, city });
 
     // Update tray icon
-    try {
-        const image = await Jimp.create(16, 16, `#${color}ff`);
-        const buffer = await image.getBufferAsync(Jimp.MIME_PNG);
-        const nativeImg = nativeImage.createFromBuffer(buffer);
-        tray.setImage(nativeImg);
-    } catch (err) {
-        console.error('Failed to create icon:', err);
+    const dataUrl = colorToPngMap[color] || colorToPngMap['fefefe']; // Fallback to white
+    if (dataUrl) {
+        const image = nativeImage.createFromDataURL(dataUrl);
+        const resizedImage = image.resize({ width: 16, height: 16 });
+        tray.setImage(resizedImage);
     }
-
 
     // Update tray tooltip
     const tooltipText = `${city} — ${temp.toFixed(1)}°C, rain ${hasPrecipitation ? 'expected' : 'not expected'}`;

@@ -7,6 +7,7 @@ let tray = null;
 let busylight = null;
 let win = null;
 let settingsWin = null;
+let sunTimes = { sunrise: null, sunset: null };
 const configPath = path.join(app.getPath('userData'), 'config.json');
 
 function loadConfig() {
@@ -117,10 +118,12 @@ ipcMain.on('set-busylight', (event, { color, pulse, intensity }) => {
     const config = loadConfig();
     if (config.sunsetSunrise) {
         const now = new Date();
-        const { sunrise, sunset } = win.webContents.getVariable('sunTimes');
-        if (now < sunrise || now > sunset) {
-            busylight.off();
-            return;
+        if (sunTimes.sunrise && sunTimes.sunset) {
+            if (now < sunTimes.sunrise || now > sunTimes.sunset) {
+                busylight.off();
+                console.log('Turning off light due to sunset/sunrise setting.');
+                return;
+            }
         }
     }
 
@@ -142,6 +145,11 @@ ipcMain.on('set-busylight', (event, { color, pulse, intensity }) => {
 
 ipcMain.on('renderer-log', (event, ...args) => {
     console.log('[Renderer]', ...args);
+});
+
+ipcMain.on('sun-times', (event, times) => {
+    sunTimes.sunrise = new Date(times.sunrise);
+    sunTimes.sunset = new Date(times.sunset);
 });
 
 ipcMain.handle('get-settings', () => {

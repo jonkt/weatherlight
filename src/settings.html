@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Settings</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background: #f8f8f8; }
+        .setting { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; }
+        input[type="text"], input[type="range"] { width: 95%; padding: 5px; }
+        button { margin-top: 10px; padding: 5px 15px; }
+        #buttons { text-align: right; }
+    </style>
+</head>
+<body>
+    <div class="setting">
+        <label for="location">Location (e.g., city, country):</label>
+        <input type="text" id="location">
+    </div>
+    <div class="setting">
+        <label for="pulseSpeed">Pulse Speed (ms):</label>
+        <input type="range" id="pulseSpeed" min="500" max="10000" step="100">
+        <span id="pulseSpeedValue">5000ms</span>
+    </div>
+    <div class="setting">
+        <input type="checkbox" id="sunsetSunrise">
+        <label for="sunsetSunrise">Turn off between sunset and sunrise</label>
+    </div>
+    <div id="buttons">
+        <button id="save">Save</button>
+        <button id="close">Close</button>
+    </div>
+    <script src="settings.js"></script>
+</body>
+</html>

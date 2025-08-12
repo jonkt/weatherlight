@@ -1,5 +1,5 @@
 {
-  "name": "busylight-weather",
+  "name": "WeatherLight",
   "version": "1.0.0",
   "description": "Busylight Weather App",
   "main": "src/main.js",
@@ -15,9 +15,5 @@
     "axios": "^1.11.0",
     "electron": "^37.2.6",
     "node-hid": "^3.2.0"
-  },
-  "devDependencies": {
-    "electron-builder": "^26.0.12",
-    "esbuild": "^0.25.8"
   }
 }

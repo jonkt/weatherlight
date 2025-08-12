@@ -1,7 +1,7 @@
 const { app, Tray, Menu, ipcMain, BrowserWindow, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const BusyLight = require('@pureit/busylight').BusyLight;
+const busylightModule = require('../lib');
 
 let tray = null;
 let busylight = null;
@@ -70,33 +70,61 @@ function openLocationPrompt() {
   promptWin.on('closed', () => { promptWin = null; });
 }
 
+function adjustBrightness(color, intensity) {
+  if (typeof color !== 'string' || color.length !== 6) {
+    return color; // Return original if format is not as expected
+  }
+  const colorValue = parseInt(color, 16);
+  let r = (colorValue >> 16) & 255;
+  let g = (colorValue >> 8) & 255;
+  let b = colorValue & 255;
+
+  const factor = intensity / 100;
+  r = Math.round(r * factor);
+  g = Math.round(g * factor);
+  b = Math.round(b * factor);
+
+  return [r, g, b];
+}
+
 app.whenReady().then(() => {
   createTray();
   createWindow();
   // Initialize Busylight
-  const devices = BusyLight.devices();
-  console.log('Busylight devices found:', devices);
-  if (devices && devices.length > 0) {
-    busylight = new BusyLight(devices[0]);
-    busylight.connect();
-    console.log('Busylight connected.');
-  } else {
-    console.error('No Busylight found!');
+  try {
+    busylight = busylightModule.get();
+    busylight.on('connected', () => {
+      console.log('Busylight connected.');
+    });
+    busylight.on('disconnected', () => {
+      console.log('Busylight disconnected.');
+    });
+    busylight.on('error', (err) => {
+      console.error('Busylight error:', err);
+    });
+  } catch (e) {
+    console.error('Failed to initialize Busylight:', e);
   }
 });
 
-ipcMain.on('set-busylight', (event, { color, pulse }) => {
-  console.log('IPC received: set-busylight', { color, pulse });
+ipcMain.on('set-busylight', (event, { color, pulse, intensity }) => {
+  console.log('IPC received: set-busylight', { color, pulse, intensity });
   if (!busylight) {
     console.error('No busylight instance available in IPC handler.');
     return;
   }
+
+  const finalColor = adjustBrightness(color, intensity);
+  console.log('Adjusted color:', finalColor);
+
   busylight.off();
-  busylight.light(color);
-  console.log('Busylight.light called with', color);
+
   if (pulse) {
-    busylight.pulse(color);
-    console.log('Busylight.pulse called with', color);
+    busylight.blink([finalColor, [0, 0, 0]], 500); // Blink between color and off every 500ms
+    console.log('Busylight.blink called with', finalColor);
+  } else {
+    busylight.light(finalColor);
+    console.log('Busylight.light called with', finalColor);
   }
 });
 

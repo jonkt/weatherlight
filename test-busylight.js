@@ -1,17 +1,17 @@
-const BusyLight = require('@pureit/busylight').BusyLight;
+const busylightModule = require('./lib');
 
 (async () => {
   try {
-    const devices = BusyLight.devices();
-    console.log('Devices:', devices);
-    if (!devices || devices.length === 0) {
-      console.log('No Busylight found!');
-      return;
-    }
-    const busylight = new BusyLight(devices[0]);
-    busylight.connect();
+    const busylight = busylightModule.get();
+    console.log('Busylight initialized. Turning light red...');
     busylight.light('ff0000'); // Turn on red light
-    console.log('Busylight set to red.');
+
+    setTimeout(() => {
+      console.log('Turning light off.');
+      busylight.off();
+      busylight.close();
+    }, 3000);
+
   } catch (err) {
     console.error('Error:', err);
   }

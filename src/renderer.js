@@ -28,7 +28,14 @@ function setBusylightColor(temp, hasPrecipitation, city, intensity) {
     }
 
     log(`Setting Busylight for ${city}: temp=${temp}°C, precipitation=${hasPrecipitation}, color=${color}, intensity=${intensity}`);
-    ipcRenderer.send('set-busylight', { color, pulse: hasPrecipitation, intensity });
+    ipcRenderer.send('set-busylight', {
+        color,
+        pulse: hasPrecipitation,
+        intensity,
+        temp,
+        hasPrecipitation,
+        city
+    });
 }
 
 async function fetchWeather() {

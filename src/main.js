@@ -114,15 +114,12 @@ ipcMain.on('set-busylight', (event, { color, pulse, intensity, temp, hasPrecipit
     console.log('IPC received: set-busylight', { color, pulse, intensity, temp, hasPrecipitation, city });
 
     // Update tray icon
-    const image = nativeImage.createFromDataURL(
-        `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
-            `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#${color}"/></svg>`
-        )}`
-    );
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="#${color}"/></svg>`;
+    const image = nativeImage.createFromDataURL(`data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`);
     tray.setImage(image);
 
     // Update tray tooltip
-    const tooltipText = `${app.getName()} — ${city} — ${temp.toFixed(1)}°C, rain ${hasPrecipitation ? 'expected' : 'not expected'}`;
+    const tooltipText = `${city} — ${temp.toFixed(1)}°C, rain ${hasPrecipitation ? 'expected' : 'not expected'}`;
     tray.setToolTip(tooltipText);
 
     if (!busylight) {

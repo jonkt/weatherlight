@@ -1,0 +1,78 @@
+Hot Temperatures
+120°F to 150°F: RGB(142, 36, 62)
+
+115°F to 120°F: RGB(170, 39, 63)
+
+110°F to 115°F: RGB(193, 42, 63)
+
+105°F to 110°F: RGB(209, 46, 62)
+
+100°F to 105°F: RGB(222, 53, 58)
+
+Warm Temperatures
+95°F to 100°F: RGB(228, 70, 56)
+
+90°F to 95°F: RGB(231, 88, 55)
+
+85°F to 90°F: RGB(232, 107, 56)
+
+80°F to 85°F: RGB(231, 126, 60)
+
+75°F to 80°F: RGB(228, 147, 68)
+
+70°F to 75°F: RGB(221, 169, 81)
+
+Mild & Cool Temperatures
+65°F to 70°F: RGB(189, 182, 98)
+
+60°F to 65°F: RGB(150, 185, 117)
+
+55°F to 60°F: RGB(113, 185, 137)
+
+50°F to 55°F: RGB(83, 183, 157)
+
+45°F to 50°F: RGB(63, 178, 174)
+
+40°F to 45°F: RGB(51, 172, 188)
+
+Cold & Freezing Temperatures
+35°F to 40°F: RGB(42, 156, 189)
+
+30°F to 35°F: RGB(37, 140, 185)
+
+25°F to 30°F: RGB(33, 124, 180)
+
+20°F to 25°F: RGB(30, 108, 173)
+
+15°F to 20°F: RGB(29, 93, 166)
+
+10°F to 15°F: RGB(28, 79, 158)
+
+5°F to 10°F: RGB(28, 65, 149)
+
+0°F to 5°F: RGB(122, 131, 162)
+
+Extremely Cold Temperatures
+-5°F to 0°F: RGB(138, 145, 170)
+
+-10°F to -5°F: RGB(153, 158, 178)
+
+-15°F to -10°F: RGB(167, 171, 186)
+
+-20°F to -15°F: RGB(180, 183, 193)
+
+-25°F to -20°F: RGB(193, 194, 201)
+
+-30°F to -25°F: RGB(205, 206, 208)
+
+-35°F to -30°F: RGB(216, 217, 218)
+
+-40°F to -35°F: RGB(226, 226, 227)
+
+-45°F to -40°F: RGB(235, 235, 235)
+
+-50°F to -45°F: RGB(243, 243, 243)
+
+-55°F to -50°F: RGB(250, 250, 250)
+
+-60°F to -55°F: RGB(254, 254, 254)

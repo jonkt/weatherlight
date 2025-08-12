@@ -41,6 +41,16 @@ const colorScale = [
   { temp: 1.7, color: '2a9cbd' },
   // 40°F to 45°F -> 4.4°C
   { temp: 4.4, color: '33acbc' },
+  // 45°F to 50°F -> 7.2°C
+  { temp: 7.2, color: '3fb2ae' },
+  // 50°F to 55°F -> 10.0°C
+  { temp: 10.0, color: '53b79d' },
+  // 55°F to 60°F -> 12.8°C
+  { temp: 12.8, color: '71b989' },
+  // 60°F to 65°F -> 15.6°C
+  { temp: 15.6, color: '96b975' },
+  // 65°F to 70°F -> 18.3°C
+  { temp: 18.3, color: 'bdb662' },
   // 70°F to 75°F -> 21.1°C
   { temp: 21.1, color: 'dda951' },
   // 75°F to 80°F -> 23.9°C

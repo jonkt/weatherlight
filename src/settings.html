@@ -2,27 +2,37 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Settings</title>
+    <title>Busylight Weather Settings</title>
     <style>
         body { font-family: sans-serif; margin: 20px; background: #f8f8f8; }
         .setting { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; }
-        input[type="text"], input[type="range"] { width: 95%; padding: 5px; }
+        label { display: inline-block; margin-bottom: 5px; }
+        input[type="text"] { width: 95%; padding: 5px; }
+        input[type="range"] { width: 80%; }
         button { margin-top: 10px; padding: 5px 15px; }
         #buttons { text-align: right; }
+        #location-status { display: inline-block; width: 20px; text-align: center; }
+        #pulse-speed-container { display: none; }
+        .checkbox-label { display: flex; align-items: center; }
+        .checkbox-label input { margin-right: 10px; }
     </style>
 </head>
 <body>
     <div class="setting">
-        <label for="location">Location (e.g., city, country):</label>
+        <label for="location">Location (i.e., City, Country):</label>
         <input type="text" id="location">
+        <span id="location-status"></span>
     </div>
-    <div class="setting">
-        <label for="pulseSpeed">Pulse Speed (ms):</label>
-        <input type="range" id="pulseSpeed" min="500" max="10000" step="100">
-        <span id="pulseSpeedValue">5000ms</span>
+    <div class="setting checkbox-label">
+        <input type="checkbox" id="pulse">
+        <label for="pulse">Pulse for precipitation</label>
     </div>
-    <div class="setting">
+    <div class="setting" id="pulse-speed-container">
+        <label for="pulseSpeed">Pulse Speed (s):</label>
+        <input type="range" id="pulseSpeed" min="0.5" max="10" step="0.1">
+        <span id="pulseSpeedValue">5.0s</span>
+    </div>
+    <div class="setting checkbox-label">
         <input type="checkbox" id="sunsetSunrise">
         <label for="sunsetSunrise">Turn off between sunset and sunrise</label>
     </div>

@@ -16,13 +16,14 @@ function loadConfig() {
             const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
             return {
                 location: 'havelock north,nz',
+                pulse: true,
                 pulseSpeed: 5000,
                 sunsetSunrise: false,
                 ...config
             };
         }
     } catch (e) { console.error('Error loading config:', e); }
-    return { location: 'havelock north,nz', pulseSpeed: 5000, sunsetSunrise: false };
+    return { location: 'havelock north,nz', pulse: true, pulseSpeed: 5000, sunsetSunrise: false };
 }
 
 function saveConfig(config) {
@@ -132,7 +133,7 @@ ipcMain.on('set-busylight', (event, { color, pulse, intensity }) => {
 
     busylight.off();
 
-    if (pulse) {
+    if (pulse && config.pulse) {
         const highPulseColor = finalColor.map(c => Math.round(c * 0.6));
         const lowPulseColor = finalColor.map(c => Math.round(c * 0.3));
         busylight.pulse([highPulseColor, lowPulseColor], config.pulseSpeed || 5000);

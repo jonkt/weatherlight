@@ -4,50 +4,148 @@
     <meta charset="UTF-8">
     <title>Busylight Weather Settings</title>
     <style>
-        body { font-family: sans-serif; margin: 20px; background: #f8f8f8; }
-        .setting { margin-bottom: 15px; }
-        label { display: inline-block; margin-bottom: 5px; }
-        input[type="text"] { width: 95%; padding: 5px; }
-        input[type="range"] { width: 80%; }
-        button { margin-top: 10px; padding: 5px 15px; }
-        #buttons { text-align: right; }
-        #location-status { display: block; margin-top: 5px; }
-        #pulse-speed-container { display: none; }
-        .checkbox-label { display: flex; align-items: center; }
-        .checkbox-label input { margin-right: 10px; }
+        :root {
+            --bg-color: #f4f6f9;
+            --card-bg: #ffffff;
+            --primary: #3498db;
+            --text: #333;
+            --text-secondary: #666;
+            --border: #e0e0e0;
+            --success: #28a745;
+            --danger: #dc3545;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+
+        h2 { margin-top: 0; font-size: 1.2rem; color: var(--text-secondary); border-bottom: 2px solid var(--primary); padding-bottom: 10px; display: inline-block; margin-bottom: 20px; }
+
+        .container {
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            flex: 1;
+        }
+
+        .setting { margin-bottom: 20px; }
+        
+        label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 0.9rem; }
+        
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            font-size: 1rem;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+        }
+        
+        input[type="text"]:focus {
+            border-color: var(--primary);
+            outline: none;
+        }
+
+        input[type="range"] { width: 100%; cursor: pointer; }
+
+        .checkbox-container {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+        
+        .checkbox-container input { margin-right: 12px; transform: scale(1.2); cursor: pointer; }
+        .checkbox-container label { margin: 0; font-weight: normal; cursor: pointer; }
+
+        .status { 
+            font-size: 0.85rem; 
+            margin-top: 5px; 
+            display: block; 
+            min-height: 1.2em; 
+        }
+
+        .range-value {
+            float: right;
+            font-weight: bold;
+            color: var(--primary);
+            font-size: 0.9rem;
+        }
+
+        .buttons {
+            margin-top: 20px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        #save { background-color: var(--primary); color: white; }
+        #save:hover { background-color: #2980b9; }
+
+        #close { background-color: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+        #close:hover { background-color: #f0f0f0; }
+
     </style>
 </head>
 <body>
-    <div class="setting">
-        <label for="apiKey">OpenWeatherMap API Key:</label>
-        <input type="text" id="apiKey">
-    </div>
-    <div class="setting">
-        <label for="location">Location (e.g., London, UK):</label>
-        <input type="text" id="location">
-        <span id="location-status"></span>
-    </div>
-    <div class="setting checkbox-label">
-        <input type="checkbox" id="pulse">
-        <label for="pulse">Pulse for precipitation</label>
-    </div>
-    <div class="setting" id="pulse-speed-container">
-        <label for="pulseSpeed">Pulse Speed (s):</label>
-        <input type="range" id="pulseSpeed" min="0.5" max="10" step="0.1">
-        <span id="pulseSpeedValue">5.0s</span>
-    </div>
-    <div class="setting">
-        <label for="maxBrightness">Max Brightness:</label>
-        <input type="range" id="maxBrightness" min="25" max="100" step="1">
-        <span id="maxBrightnessValue">60%</span>
-    </div>
-    <div class="setting checkbox-label">
-        <input type="checkbox" id="sunsetSunrise">
-        <label for="sunsetSunrise">Turn off between sunset and sunrise</label>
-    </div>
-    <div id="buttons">
-        <button id="save">Save</button>
-        <button id="close">Close</button>
+    <div class="container">
+        <h2>Configuration</h2>
+
+        <div class="setting">
+            <label for="apiKey">OpenWeatherMap API Key</label>
+            <input type="text" id="apiKey" placeholder="Enter your API key">
+        </div>
+
+        <div class="setting">
+            <label for="location">Location</label>
+            <input type="text" id="location" placeholder="City, Country">
+            <span id="location-status" class="status"></span>
+        </div>
+
+        <div class="setting checkbox-container">
+            <input type="checkbox" id="pulse">
+            <label for="pulse">Pulse light on precipitation forecast</label>
+        </div>
+
+        <div class="setting" id="pulse-speed-container">
+            <span class="range-value" id="pulseSpeedValue">5.0s</span>
+            <label for="pulseSpeed">Pulse Speed</label>
+            <input type="range" id="pulseSpeed" min="0.5" max="10" step="0.1">
+        </div>
+
+        <div class="setting">
+            <span class="range-value" id="maxBrightnessValue">60%</span>
+            <label for="maxBrightness">Max Brightness</label>
+            <input type="range" id="maxBrightness" min="10" max="100" step="1">
+        </div>
+
+        <div class="setting checkbox-container">
+            <input type="checkbox" id="sunsetSunrise">
+            <label for="sunsetSunrise">Disable between sunset and sunrise</label>
+        </div>
+
+        <div class="buttons">
+            <button id="close">Cancel</button>
+            <button id="save">Save Settings</button>
+        </div>
     </div>
     <script src="settings.js"></script>
 </body>

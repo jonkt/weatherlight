@@ -20,7 +20,7 @@ This application is built with [Electron](https://www.electronjs.org/) and uses 
 *   **@pureit/busylight:** This Node.js library is used to control the Kuando Busylight device.
 *   **Electron Tray:** The application runs in the system tray, providing a simple interface to set your location or quit the app.
 
-The main process (`src/main.js`) handles the application lifecycle, tray icon, and communication with the Busylight device. The renderer process (`src/renderer.js`) is responsible for fetching weather data from the API and determining the correct color, pulse, and brightness for the light.
+The main process (`src/main.js`) handles the application lifecycle, tray icon, weather fetching, and communication with the Busylight device. It uses hidden renderer processes for generating tray icons and displaying the settings window.
 
 ## Setup and Installation
 
@@ -39,11 +39,8 @@ The main process (`src/main.js`) handles the application lifecycle, tray icon, a
     npm install
     ```
 
-4.  **Configure the Application:**
-    *   **API Key:** Open the `src/renderer.js` file and replace the placeholder API key with your own free key from [OpenWeatherMap](https://openweathermap.org/api).
-        ```javascript
-        const apiKey = 'YOUR_OPENWEATHERMAP_API_KEY'; // Replace with your key
-        ```
+    *   **Configuration:** Launch the application and use the system tray menu to access the Settings window. Enter your OpenWeatherMap API key and location there.
+        *   Alternatively, you can manually create/edit `config.json` in your user data directory (e.g., `%APPDATA%\WeatherLight\config.json` on Windows).
     *   **Location:** When you first run the app, you will need to set your location.
 
 5.  **Run the application:**
@@ -54,8 +51,7 @@ The main process (`src/main.js`) handles the application lifecycle, tray icon, a
 
 ## Configuration
 
-*   **Set Location:** Right-click the tray icon and select "Set Location". Enter your location in the format "City, Country Code" (e.g., "London, UK" or "Havelock North, NZ") and press Enter.
-*   **API Key:** The OpenWeatherMap API key must be set manually in `src/renderer.js` before running the application.
+*   **Set Location & API Key:** Right-click the tray icon and select "Settings". Enter your location (e.g., "London, UK") and your OpenWeatherMap API key.
 
 ---
 

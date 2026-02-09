@@ -10,6 +10,9 @@ const configPath = path.join(app.getPath('userData'), 'config.json');
 
 const DEFAULT_CONFIG = {
     location: '',
+    provider: 'open-meteo', // 'open-meteo' or 'openweathermap'
+    autoLocation: true,
+    geo: null, // Cached { lat, lon }
     pulse: true,
     pulseSpeed: 5000,
     sunsetSunrise: false,

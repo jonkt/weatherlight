@@ -46,15 +46,8 @@ async function fetchAndApplyWeather() {
     if (weather && !weather.error) {
         lastWeather = weather; // Store for Settings UI
 
-        // Determine Night Mode based on Config + Time
-        let isNightMode = false;
-        if (config.sunsetSunrise && weather.sunTimes && weather.sunTimes.sunrise && weather.sunTimes.sunset) {
-            const now = new Date();
-            // A simple check: is now < sunrise OR now > sunset?
-            if (now < weather.sunTimes.sunrise || now > weather.sunTimes.sunset) {
-                isNightMode = true;
-            }
-        }
+        // Determine Night Mode based on Config + Weather State
+        const isNightMode = config.sunsetSunrise && weather.isNight;
 
         let displayTemp = weather.temperature;
         let unitLabel = '°C';
@@ -177,6 +170,10 @@ ipcMain.handle('validate-location', async (event, location) => {
 
 ipcMain.handle('get-device-info', () => {
     return busylightService.getDeviceInfo();
+});
+
+ipcMain.handle('detect-location', async () => {
+    return weatherService.detectLocation();
 });
 
 ipcMain.on('set-manual-mode', (event, enabled) => {

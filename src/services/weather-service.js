@@ -138,6 +138,7 @@ class WeatherService {
                 hasPrecipitation,
                 locationName,
                 sunTimes: this.sunTimes,
+                isNight: this.checkIsNight(this.sunTimes),
                 provider: 'OpenWeatherMap'
             };
         } catch (e) {
@@ -181,6 +182,7 @@ class WeatherService {
                 hasPrecipitation,
                 locationName,
                 sunTimes: this.sunTimes,
+                isNight: this.checkIsNight(this.sunTimes),
                 provider: 'Open-Meteo'
             };
 
@@ -188,6 +190,15 @@ class WeatherService {
             console.error('Open-Meteo Fetch Error:', e.message);
             return { error: e.message };
         }
+    }
+
+    /**
+     * Helper to determine if it is currently night time.
+     */
+    checkIsNight(sunTimes) {
+        if (!sunTimes || !sunTimes.sunrise || !sunTimes.sunset) return false;
+        const now = new Date();
+        return now < sunTimes.sunrise || now > sunTimes.sunset;
     }
 
     /**

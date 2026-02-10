@@ -47,9 +47,17 @@ async function updateUIState() {
         setStatus('Location will be detected automatically.', '#666');
 
         try {
-            const weather = await window.api.getWeatherState();
-            if (weather?.locationName) {
-                locationInput.value = weather.locationName;
+            // Attempt to detect location immediately
+            const detected = await window.api.detectLocation();
+            if (detected && detected.city) {
+                locationInput.value = `${detected.city}, ${detected.country}`;
+                setStatus('✔ Location OK (Auto)', '#28a745');
+            } else {
+                // Fallback to existing state if detection fails
+                const weather = await window.api.getWeatherState();
+                if (weather?.locationName) {
+                    locationInput.value = weather.locationName;
+                }
             }
         } catch (e) {
             console.error('Failed to get weather state for auto-location', e);

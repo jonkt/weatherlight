@@ -18,5 +18,7 @@ contextBridge.exposeInMainWorld('api', {
     // Diagnostics
     getDeviceInfo: () => ipcRenderer.invoke('get-device-info'),
     setManualMode: (enabled) => ipcRenderer.send('set-manual-mode', enabled),
-    applyManualState: (state) => ipcRenderer.send('apply-manual-state', state)
+    applyManualState: (state) => ipcRenderer.send('apply-manual-state', state),
+
+    detectLocation: () => ipcRenderer.invoke('detect-location')
 });

@@ -41,14 +41,7 @@ class BusylightService {
             : 'ffffff';
 
         // Check Night Mode
-        let isNightMode = false;
-        if (config.sunsetSunrise && weather.sunTimes) {
-            const now = new Date();
-            const { sunrise, sunset } = weather.sunTimes;
-            if (sunrise && sunset && (now < sunrise || now > sunset)) {
-                isNightMode = true;
-            }
-        }
+        const isNightMode = config.sunsetSunrise && weather.isNight;
 
         if (isNightMode) {
             this.device.off();

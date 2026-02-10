@@ -33,22 +33,29 @@ class BusylightService {
     update(weather, config) {
         if (!this.device) return 'ffffff';
 
+        // Determine Color based on temperature
+        const color = weather.temperature !== undefined
+            ? this.getColorForTemp(weather.temperature)
+            : 'ffffff';
+
         // Check Night Mode
+        let isNightMode = false;
         if (config.sunsetSunrise && weather.sunTimes) {
             const now = new Date();
             const { sunrise, sunset } = weather.sunTimes;
             if (sunrise && sunset && (now < sunrise || now > sunset)) {
-                this.device.off();
-                console.log('Night mode: Light off.');
-                return '000000';
+                isNightMode = true;
             }
         }
 
-        // Determine Color
-        const color = this.getColorForTemp(weather.temperature);
+        if (isNightMode) {
+            this.device.off();
+            console.log('Night mode: Light off.');
+            // Return the color so the UI/Icon can still display it (with night mode overlay)
+            return color;
+        }
 
-        this.device.off(); // Reset state
-
+        // Active Mode: Apply light settings
         if (weather.hasPrecipitation && config.pulse) {
             const high = this.applyBrightness(color, config.maxBrightness);
             const low = this.applyBrightness(color, config.maxBrightness / 2);

@@ -13,6 +13,7 @@ let tray = null;
 let settingsWin = null;
 let iconWin = null;
 let weatherInterval = null;
+let lastWeather = null;
 
 // --- App Lifecycle ---
 
@@ -43,13 +44,30 @@ async function fetchAndApplyWeather() {
     const weather = await weatherService.fetch(config);
 
     if (weather && !weather.error) {
-        console.log(`Weather: ${weather.temperature}°C, Precip: ${weather.hasPrecipitation}`);
-        setTrayTooltip(`${weather.locationName} — ${weather.temperature}°C`);
+        lastWeather = weather; // Store for Settings UI
+
+        // Determine Night Mode based on Config + Time
+        let isNightMode = false;
+        if (config.sunsetSunrise && weather.sunTimes && weather.sunTimes.sunrise && weather.sunTimes.sunset) {
+            const now = new Date();
+            // A simple check: is now < sunrise OR now > sunset?
+            if (now < weather.sunTimes.sunrise || now > weather.sunTimes.sunset) {
+                isNightMode = true;
+            }
+        }
+
+        let tooltip = `${weather.locationName} — ${weather.temperature}°C`;
+        if (isNightMode) {
+            tooltip += ' (Night Mode)';
+        }
+
+        console.log(`Weather: ${weather.temperature}°C, NightMode: ${isNightMode}`);
+        setTrayTooltip(tooltip);
 
         const color = busylightService.update(weather, config);
 
-        // Update Tray Icon
-        if (iconWin) iconWin.webContents.send('set-icon-color', color);
+        // Update Tray Icon with Night Mode flag
+        if (iconWin) iconWin.webContents.send('set-icon-color', color, isNightMode);
     } else {
         console.error('Weather update failed:', weather?.error);
         setTrayTooltip('Error fetching weather');
@@ -63,7 +81,7 @@ function setTrayTooltip(text) {
 // --- Windows & UI ---
 
 function createTray() {
-    tray = new Tray(path.join(__dirname, 'icon.png'));
+    tray = new Tray(path.join(__dirname, 'sun_icon.png'));
     const contextMenu = Menu.buildFromTemplate([
         { label: 'Refresh', click: fetchAndApplyWeather },
         { label: 'Settings', click: openSettingsWindow },
@@ -93,9 +111,10 @@ function openSettingsWindow() {
         return;
     }
     settingsWin = new BrowserWindow({
-        width: 400,
-        height: 550,
-        resizable: false,
+        width: 500,
+        height: 700,
+        resizable: true,
+        icon: path.join(__dirname, 'sun_icon.png'),
         minimizable: false,
         maximizable: false,
         show: true,
@@ -113,6 +132,8 @@ function openSettingsWindow() {
 // --- IPC Handlers ---
 
 ipcMain.handle('get-settings', () => configService.get());
+
+ipcMain.handle('get-weather-state', () => lastWeather);
 
 ipcMain.on('set-settings', (event, newSettings) => {
     configService.save(newSettings);

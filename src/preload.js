@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('api', {
     validateLocation: (location) => ipcRenderer.invoke('validate-location', location),
 
     // Icon generation (if kept in renderer) requires receiving events
+    // Icon generation (if kept in renderer) requires receiving events
     onSetIconColor: (callback) => ipcRenderer.on('set-icon-color', (event, ...args) => callback(...args)),
-    sendIconData: (dataURL) => ipcRenderer.send('icon-data-url', dataURL)
+    sendIconData: (dataURL) => ipcRenderer.send('icon-data-url', dataURL),
+
+    getWeatherState: () => ipcRenderer.invoke('get-weather-state')
 });

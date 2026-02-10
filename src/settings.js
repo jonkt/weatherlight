@@ -27,7 +27,7 @@ function setStatus(text, color) {
     locationStatus.style.color = color;
 }
 
-function updateUIState() {
+async function updateUIState() {
     // 1. Provider logic
     const isOWM = providerSelect.value === 'openweathermap';
     apiKeyContainer.style.display = isOWM ? 'block' : 'none';
@@ -39,6 +39,15 @@ function updateUIState() {
     if (isAuto) {
         locationInput.placeholder = "Auto-detecting...";
         setStatus('Location will be detected automatically.', '#666');
+
+        try {
+            const weather = await window.api.getWeatherState();
+            if (weather?.locationName) {
+                locationInput.value = weather.locationName;
+            }
+        } catch (e) {
+            console.error('Failed to get weather state for auto-location', e);
+        }
     } else {
         locationInput.placeholder = "City, Country";
         if (!locationInput.value) setStatus('', 'inherit');
@@ -107,11 +116,20 @@ closeButton.addEventListener('click', () => {
 
 // --- Initialize ---
 
-window.api.getSettings().then(settings => {
+Promise.all([
+    window.api.getSettings(),
+    window.api.getWeatherState()
+]).then(([settings, weather]) => {
     providerSelect.value = settings.provider || 'open-meteo';
-    autoLocationInput.checked = settings.autoLocation !== false; // Default true
+    autoLocationInput.checked = settings.autoLocation !== false;
 
-    locationInput.value = settings.location || '';
+    // Display detected location if available and auto-mode is on
+    if (settings.autoLocation && weather?.locationName) {
+        locationInput.value = weather.locationName;
+    } else {
+        locationInput.value = settings.location || '';
+    }
+
     apiKeyInput.value = settings.apiKey || '';
 
     pulseInput.checked = settings.pulse !== false;
@@ -124,6 +142,37 @@ window.api.getSettings().then(settings => {
     maxBrightnessValue.textContent = `${maxBrightnessInput.value}%`;
 
     sunsetSunriseInput.checked = settings.sunsetSunrise || false;
+
+    // Display Sun Times
+    const sunTimesDiv = document.getElementById('sunTimes');
+    if (weather?.sunTimes) {
+        const fmt = (d) => {
+            if (!d) return '--:--';
+            return new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        };
+        const nextSunset = fmt(weather.sunTimes.sunset);
+        const nextSunrise = fmt(weather.sunTimes.sunrise);
+
+        // Use spans with block display or just text with gap
+        sunTimesDiv.innerHTML = `<span>Next sunset: <strong>${nextSunset}</strong></span><span>Next sunrise: <strong>${nextSunrise}</strong></span>`;
+    }
+
+    // Help Bubble Logic
+    const helpIcon = document.getElementById('apiKeyHelpIcon');
+    const helpBox = document.getElementById('apiKeyHelp');
+    const owmLink = document.getElementById('owmLink');
+
+    helpIcon.addEventListener('click', (e) => {
+        e.preventDefault();
+        helpBox.style.display = helpBox.style.display === 'block' ? 'none' : 'block';
+    });
+
+    // Simple mock for link opening if we didn't expose shell
+    owmLink.addEventListener('click', (e) => {
+        // e.preventDefault();
+        // Ideally call window.api.openExternal('https://openweathermap.org')
+        // For now, let it try default behavior or just be text.
+    });
 
     updateUIState();
 });

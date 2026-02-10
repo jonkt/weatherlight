@@ -174,8 +174,20 @@
         </div>
 
         <div class="setting" id="apiKeyContainer">
-            <label for="apiKey">OpenWeatherMap API Key</label>
-            <input type="text" id="apiKey" placeholder="Enter your API key">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label for="apiKey" style="margin-bottom: 0;">OpenWeatherMap API Key</label>
+                <span id="apiKeyHelpIcon"
+                    style="cursor: pointer; color: var(--primary); font-size: 0.9em; border: 1px solid var(--primary); border-radius: 50%; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center;">?</span>
+            </div>
+            <div id="apiKeyHelp"
+                style="display: none; background: #eef7ff; padding: 10px; border-radius: 4px; margin: 5px 0; font-size: 0.85rem; border-left: 3px solid var(--primary);">
+                <ol style="margin: 0; padding-left: 20px;">
+                    <li>Go to <a href="#" id="owmLink">openweathermap.org</a> and sign up.</li>
+                    <li>Navigate to "My API Keys".</li>
+                    <li>Copy your key and paste it below.</li>
+                </ol>
+            </div>
+            <input type="text" id="apiKey" placeholder="Enter your API key" style="margin-top: 8px;">
         </div>
 
         <div class="setting checkbox-container" style="margin-bottom: 10px;">
@@ -191,7 +203,7 @@
 
         <div class="setting checkbox-container">
             <input type="checkbox" id="pulse">
-            <label for="pulse">Pulse light on precipitation forecast</label>
+            <label for="pulse">Pulse light based on forecasted precipitation</label>
         </div>
 
         <div class="setting" id="pulse-speed-container">
@@ -208,7 +220,10 @@
 
         <div class="setting checkbox-container">
             <input type="checkbox" id="sunsetSunrise">
-            <label for="sunsetSunrise">Disable between sunset and sunrise</label>
+            <label for="sunsetSunrise">Turn off light between sunset and sunrise</label>
+        </div>
+        <div id="sunTimes"
+            style="margin-left: 28px; font-size: 0.85rem; color: #666; margin-top: -15px; margin-bottom: 20px; display: flex; gap: 20px;">
         </div>
 
         <div class="buttons">

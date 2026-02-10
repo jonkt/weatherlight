@@ -13,5 +13,10 @@ contextBridge.exposeInMainWorld('api', {
 
     getWeatherState: () => ipcRenderer.invoke('get-weather-state'),
     openExternal: (url) => ipcRenderer.send('open-external', url),
-    resizeSettings: (height) => ipcRenderer.send('resize-settings', height)
+    resizeSettings: (height) => ipcRenderer.send('resize-settings', height),
+
+    // Diagnostics
+    getDeviceInfo: () => ipcRenderer.invoke('get-device-info'),
+    setManualMode: (enabled) => ipcRenderer.send('set-manual-mode', enabled),
+    applyManualState: (state) => ipcRenderer.send('apply-manual-state', state)
 });

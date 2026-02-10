@@ -56,12 +56,20 @@ async function fetchAndApplyWeather() {
             }
         }
 
-        let tooltip = `${weather.locationName} — ${weather.temperature}°C`;
+        let displayTemp = weather.temperature;
+        let unitLabel = '°C';
+
+        if (config.unit === 'F') {
+            displayTemp = Math.round((weather.temperature * 9 / 5) + 32);
+            unitLabel = '°F';
+        }
+
+        let tooltip = `${weather.locationName} — ${displayTemp}${unitLabel}`;
         if (isNightMode) {
             tooltip += ' (Night Mode)';
         }
 
-        console.log(`Weather: ${weather.temperature}°C, NightMode: ${isNightMode}`);
+        console.log(`Weather: ${weather.temperature}°C (${displayTemp}${unitLabel}), NightMode: ${isNightMode}`);
         setTrayTooltip(tooltip);
 
         const color = busylightService.update(weather, config);
@@ -88,7 +96,7 @@ function createTray() {
         { type: 'separator' },
         { label: 'Quit', click: () => app.quit() }
     ]);
-    tray.setToolTip('Busylight Weather');
+    tray.setToolTip('WeatherLight');
     tray.setContextMenu(contextMenu);
     tray.on('double-click', openSettingsWindow);
 }
@@ -165,4 +173,17 @@ ipcMain.on('resize-settings', (event, height) => {
 ipcMain.handle('validate-location', async (event, location) => {
     const config = configService.get();
     return weatherService.validateLocation(location, config.apiKey);
+});
+
+ipcMain.handle('get-device-info', () => {
+    return busylightService.getDeviceInfo();
+});
+
+ipcMain.on('set-manual-mode', (event, enabled) => {
+    busylightService.setManualMode(enabled);
+    if (!enabled) fetchAndApplyWeather(); // Re-apply weather when disabling manual mode
+});
+
+ipcMain.on('apply-manual-state', (event, state) => {
+    busylightService.applyManualState(state);
 });

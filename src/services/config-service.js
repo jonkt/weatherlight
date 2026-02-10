@@ -17,7 +17,8 @@ const DEFAULT_CONFIG = {
     pulseSpeed: 5000,
     sunsetSunrise: false,
     maxBrightness: 60, // Default to 60%
-    apiKey: ''
+    apiKey: '',
+    unit: 'C' // 'C' or 'F'
 };
 
 class ConfigService {

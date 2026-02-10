@@ -1,78 +1,125 @@
 const colorScale = [
-  //-60°F to -55°F -> -51.1°C
-  { temp: -51.1, color: 'fefefe' },
-  // -55°F to -50°F -> -48.3°C
-  { temp: -48.3, color: 'fafafa' },
-  // -50°F to -45°F -> -45.6°C
-  { temp: -45.6, color: 'f3f3f3' },
-  // -45°F to -40°F -> -42.8°C
-  { temp: -42.8, color: 'ebebeb' },
-  // -40°F to -35°F -> -40°C
-  { temp: -40, color: 'e2e2e3' },
-  // -35°F to -30°F -> -37.2°C
-  { temp: -37.2, color: 'd8d9da' },
-  // -30°F to -25°F -> -34.4°C
-  { temp: -34.4, color: 'cdcece' },
-  // -25°F to -20°F -> -31.7°C
-  { temp: -31.7, color: 'c1c2c9' },
-  // -20°F to -15°F -> -28.9°C
-  { temp: -28.9, color: 'b4b7c1' },
-  // -15°F to -10°F -> -26.1°C
-  { temp: -26.1, color: 'a7abbb' },
-  // -10°F to -5°F -> -23.3°C
-  { temp: -23.3, color: '999eb2' },
-  // -5°F to 0°F -> -20.6°C
-  { temp: -20.6, color: '8a91aa' },
-  // 0°F to 5°F -> -17.8°C
-  { temp: -17.8, color: '7a83a2' },
-  // 5°F to 10°F -> -15°C
-  { temp: -15, color: '1c4195' },
-  // 10°F to 15°F -> -12.2°C
-  { temp: -12.2, color: '1c4f9e' },
-  // 15°F to 20°F -> -9.4°C
-  { temp: -9.4, color: '1d5da6' },
-  // 20°F to 25°F -> -6.7°C
-  { temp: -6.7, color: '1e6cad' },
-  // 25°F to 30°F -> -3.9°C
-  { temp: -3.9, color: '217cb4' },
-  // 30°F to 35°F -> -1.1°C
-  { temp: -1.1, color: '258cb9' },
-  // 35°F to 40°F -> 1.7°C
-  { temp: 1.7, color: '2a9cbd' },
-  // 40°F to 45°F -> 4.4°C
-  { temp: 4.4, color: '33acbc' },
-  // 45°F to 50°F -> 7.2°C
-  { temp: 7.2, color: '3fb2ae' },
-  // 50°F to 55°F -> 10.0°C
-  { temp: 10.0, color: '53b79d' },
-  // 55°F to 60°F -> 12.8°C
-  { temp: 12.8, color: '71b989' },
-  // 60°F to 65°F -> 15.6°C
-  { temp: 15.6, color: '96b975' },
-  // 65°F to 70°F -> 18.3°C
-  { temp: 18.3, color: 'bdb662' },
-  // 70°F to 75°F -> 21.1°C
-  { temp: 21.1, color: 'dda951' },
-  // 75°F to 80°F -> 23.9°C
-  { temp: 23.9, color: 'e49344' },
-  // 80°F to 85°F -> 26.7°C
-  { temp: 26.7, color: 'e77e3c' },
-  // 85°F to 90°F -> 29.4°C
-  { temp: 29.4, color: 'e86b38' },
-  // 90°F to 95°F -> 32.2°C
-  { temp: 32.2, color: 'e75837' },
-  // 95°F to 100°F -> 35°C
-  { temp: 35, color: 'e44638' },
-  // 100°F to 105°F -> 37.8°C
-  { temp: 37.8, color: 'de353a' },
-  // 105°F to 110°F -> 40.6°C
-  { temp: 40.6, color: 'd12e3e' },
-  // 110°F to 115°F -> 43.3°C
-  { temp: 43.3, color: 'c12a3f' },
-  // 115°F to 120°F -> 46.1°C
-  { temp: 46.1, color: 'aa273f' },
-  // 120°F to 150°F -> 48.9°C
-  { temp: 48.9, color: '8e243e' }
+  { temp: -50, color: 'e1e1ff' }, // -58°F
+  { temp: -49, color: 'dfdfff' }, // -56°F
+  { temp: -48, color: 'dfdfff' }, // -54°F
+  { temp: -47, color: 'dcdcff' }, // -53°F
+  { temp: -46, color: 'dcdcff' }, // -51°F
+  { temp: -45, color: 'dadaff' }, // -49°F
+  { temp: -44, color: 'dadaff' }, // -47°F
+  { temp: -43, color: 'd7d7ff' }, // -45°F
+  { temp: -42, color: 'd2d2ff' }, // -44°F
+  { temp: -41, color: 'cbcbff' }, // -42°F
+  { temp: -40, color: 'c4c4ff' }, // -40°F
+  { temp: -39, color: 'bdbdff' }, // -38°F
+  { temp: -38, color: 'b6b6ff' }, // -36°F
+  { temp: -37, color: 'afafff' }, // -35°F
+  { temp: -36, color: 'a9a9ff' }, // -33°F
+  { temp: -35, color: 'a4a4ff' }, // -31°F
+  { temp: -34, color: '9e9eff' }, // -29°F
+  { temp: -33, color: '9898ff' }, // -27°F
+  { temp: -32, color: '9292ff' }, // -26°F
+  { temp: -31, color: '8c8cff' }, // -24°F
+  { temp: -30, color: '8787ff' }, // -22°F
+  { temp: -29, color: '8181ff' }, // -20°F
+  { temp: -28, color: '7373f4' }, // -18°F
+  { temp: -27, color: '6565e7' }, // -17°F
+  { temp: -26, color: '5757da' }, // -15°F
+  { temp: -25, color: '4b4bcd' }, // -13°F
+  { temp: -24, color: '4040c1' }, // -11°F
+  { temp: -23, color: '3737b6' }, // -9°F
+  { temp: -22, color: '2e2eab' }, // -8°F
+  { temp: -21, color: '2626a0' }, // -6°F
+  { temp: -20, color: '1f1f96' }, // -4°F
+  { temp: -19, color: '19198c' }, // -2°F
+  { temp: -18, color: '141483' }, // 0°F
+  { temp: -17, color: '11127e' }, // 1°F
+  { temp: -16, color: '0e1078' }, // 3°F
+  { temp: -15, color: '0b0f73' }, // 5°F
+  { temp: -14, color: '0a0d6e' }, // 7°F
+  { temp: -13, color: '080d6b' }, // 9°F
+  { temp: -12, color: '060b66' }, // 10°F
+  { temp: -11, color: '050a62' }, // 12°F
+  { temp: -10, color: '04095d' }, // 14°F
+  { temp: -9, color: '030859' }, // 16°F
+  { temp: -8, color: '020856' }, // 18°F
+  { temp: -7, color: '010752' }, // 19°F
+  { temp: -6, color: '01064e' }, // 21°F
+  { temp: -5, color: '01054a' }, // 23°F
+  { temp: -4, color: '000546' }, // 25°F
+  { temp: -3, color: '000443' }, // 27°F
+  { temp: -2, color: '000440' }, // 28°F
+  { temp: -1, color: '00033d' }, // 30°F
+  { temp: 0, color: '00033a' }, // 32°F
+  { temp: 1, color: '000b57' }, // 34°F
+  { temp: 2, color: '001d7c' }, // 36°F
+  { temp: 3, color: '003bab' }, // 37°F
+  { temp: 4, color: '0068e4' }, // 39°F
+  { temp: 5, color: '008cd7' }, // 41°F
+  { temp: 6, color: '009e98' }, // 43°F
+  { temp: 7, color: '00b466' }, // 45°F
+  { temp: 8, color: '00cb40' }, // 46°F
+  { temp: 9, color: '00e425' }, // 48°F
+  { temp: 10, color: '00ff13' }, // 50°F
+  { temp: 11, color: '01ff0b' }, // 52°F
+  { temp: 12, color: '07ff05' }, // 54°F
+  { temp: 13, color: '17ff02' }, // 55°F
+  { temp: 14, color: '33ff01' }, // 57°F
+  { temp: 15, color: '60ff00' }, // 59°F
+  { temp: 16, color: '89f400' }, // 61°F
+  { temp: 17, color: '9cda00' }, // 63°F
+  { temp: 18, color: 'b1c100' }, // 64°F
+  { temp: 19, color: 'c8ab00' }, // 66°F
+  { temp: 20, color: 'e19600' }, // 68°F
+  { temp: 21, color: 'fc8300' }, // 70°F
+  { temp: 22, color: 'ff7300' }, // 72°F
+  { temp: 23, color: 'ff6600' }, // 73°F
+  { temp: 24, color: 'ff5900' }, // 75°F
+  { temp: 25, color: 'ff4d00' }, // 77°F
+  { temp: 26, color: 'ff4300' }, // 79°F
+  { temp: 27, color: 'ff3900' }, // 81°F
+  { temp: 28, color: 'ff3000' }, // 82°F
+  { temp: 29, color: 'ff2800' }, // 84°F
+  { temp: 30, color: 'ff2100' }, // 86°F
+  { temp: 31, color: 'ff1b00' }, // 88°F
+  { temp: 32, color: 'ff1500' }, // 90°F
+  { temp: 33, color: 'ff1000' }, // 91°F
+  { temp: 34, color: 'ff0c00' }, // 93°F
+  { temp: 35, color: 'ff0900' }, // 95°F
+  { temp: 36, color: 'ff0600' }, // 97°F
+  { temp: 37, color: 'ff0400' }, // 99°F
+  { temp: 38, color: 'ff0300' }, // 100°F
+  { temp: 39, color: 'ff0100' }, // 102°F
+  { temp: 40, color: 'ff0101' }, // 104°F
+  { temp: 41, color: 'ff0003' }, // 106°F
+  { temp: 42, color: 'ff0006' }, // 108°F
+  { temp: 43, color: 'ff000a' }, // 109°F
+  { temp: 44, color: 'f1000b' }, // 111°F
+  { temp: 45, color: 'dc000a' }, // 113°F
+  { temp: 46, color: 'cb000a' }, // 115°F
+  { temp: 47, color: 'b80009' }, // 117°F
+  { temp: 48, color: 'a90008' }, // 118°F
+  { temp: 49, color: '980008' }, // 120°F
+  { temp: 50, color: '8a0007' }, // 122°F
+  { temp: 51, color: '7c0006' }, // 124°F
+  { temp: 52, color: '6e0006' }, // 126°F
+  { temp: 53, color: '630005' }, // 127°F
+  { temp: 54, color: '570005' }, // 129°F
+  { temp: 55, color: '4e0004' }, // 131°F
+  { temp: 56, color: '440004' }, // 133°F
+  { temp: 57, color: '3c0003' }, // 135°F
+  { temp: 58, color: '330003' }, // 136°F
+  { temp: 59, color: '2d0003' }, // 138°F
+  { temp: 60, color: '260003' }, // 140°F
+  { temp: 61, color: '200002' }, // 142°F
+  { temp: 62, color: '1b0002' }, // 144°F
+  { temp: 63, color: '160002' }, // 145°F
+  { temp: 64, color: '120001' }, // 147°F
+  { temp: 65, color: '0e0001' }, // 149°F
+  { temp: 66, color: '0d0001' }, // 151°F
+  { temp: 67, color: '0d0001' }, // 153°F
+  { temp: 68, color: '0d0001' }, // 154°F
+  { temp: 69, color: '0d0001' }, // 156°F
+  { temp: 70, color: '0d0001' }, // 158°F
 ];
 
 module.exports = colorScale;

@@ -8,6 +8,7 @@ const colorScale = require('../color-scale.js');
 class BusylightService {
     constructor() {
         this.device = null;
+        this.manualMode = false;
     }
 
     /**
@@ -31,6 +32,7 @@ class BusylightService {
      * @returns {string} The hex color applied (for UI updates).
      */
     update(weather, config) {
+        if (this.manualMode) return null;
         if (!this.device) return 'ffffff';
 
         // Determine Color based on temperature
@@ -98,6 +100,44 @@ class BusylightService {
 
     off() {
         if (this.device) this.device.off();
+    }
+
+    /**
+     * Gets information about the connected device.
+     */
+    getDeviceInfo() {
+        return this.device ? this.device.getDeviceInfo() : null;
+    }
+
+    /**
+     * Enables or disables manual control mode.
+     */
+    setManualMode(enabled) {
+        this.manualMode = enabled;
+        if (!enabled) {
+            this.off(); // Reset when disabling manual mode
+        }
+    }
+
+    /**
+     * Applies a manual state to the device.
+     * @param {object} state { temp, pulse, maxBrightness, pulseSpeed }
+     */
+    applyManualState(state) {
+        if (!this.device || !this.manualMode) return;
+
+        const color = this.getColorForTemp(state.temp);
+
+        if (state.pulse) {
+            const high = this.applyBrightness(color, state.maxBrightness || 100);
+            const low = this.applyBrightness(color, (state.maxBrightness || 100) / 2);
+            this.device.pulse([high, low], state.pulseSpeed || 500); // Default to fast pulse for testing
+        } else {
+            const finalColor = this.applyBrightness(color, state.maxBrightness || 100);
+            this.device.light(finalColor);
+        }
+
+        return color;
     }
 }
 

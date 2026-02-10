@@ -35,7 +35,7 @@ async function updateUIState() {
     // Dynamic Resizing
     // Open-Meteo needs less vertical space (no API key field)
     // OWM needs more (API key field + potentially help box)
-    const newHeight = isOWM ? 850 : 760;
+    const newHeight = isOWM ? 900 : 810;
     window.api.resizeSettings(newHeight);
 
     // 2. Auto-Location logic
@@ -105,6 +105,7 @@ maxBrightnessInput.addEventListener('input', () => {
 saveButton.addEventListener('click', () => {
     const settings = {
         provider: providerSelect.value,
+        unit: document.querySelector('input[name="unit"]:checked').value,
         autoLocation: autoLocationInput.checked,
         location: locationInput.value.trim(),
         apiKey: apiKeyInput.value.trim(),
@@ -127,6 +128,14 @@ Promise.all([
     window.api.getWeatherState()
 ]).then(([settings, weather]) => {
     providerSelect.value = settings.provider || 'open-meteo';
+
+    // Unit Logic
+    if (settings.unit === 'F') {
+        document.getElementById('unitF').checked = true;
+    } else {
+        document.getElementById('unitC').checked = true;
+    }
+
     autoLocationInput.checked = settings.autoLocation !== false;
 
     // Display detected location if available and auto-mode is on
@@ -187,4 +196,101 @@ Promise.all([
     }
 
     updateUIState();
+
+    // --- Diagnostics Mode Logic ---
+
+    const mainSettings = document.getElementById('mainSettings');
+    const diagnosticsView = document.getElementById('diagnosticsView');
+    const openDiagnosticsLink = document.getElementById('openDiagnostics');
+
+    const diagDeviceInfo = document.getElementById('diag-device-info');
+    const diagManualMode = document.getElementById('diag-manual-mode');
+    const diagControls = document.getElementById('diag-controls');
+    const diagTemp = document.getElementById('diag-temp');
+    const diagTempValue = document.getElementById('diag-temp-value');
+    const diagPulse = document.getElementById('diag-pulse');
+    const diagClose = document.getElementById('diag-close');
+
+    function toggleDiagnostics(show) {
+        mainSettings.style.display = show ? 'none' : 'block';
+        diagnosticsView.style.display = show ? 'block' : 'none';
+
+        if (show) {
+            loadDiagnostics();
+            diagTemp.dispatchEvent(new Event('input'));
+        } else {
+            // Disable manual mode when closing
+            diagManualMode.checked = false;
+            updateManualModeUI();
+            window.api.setManualMode(false);
+        }
+    }
+
+    async function loadDiagnostics() {
+        diagDeviceInfo.textContent = 'Loading...';
+        try {
+            const info = await window.api.getDeviceInfo();
+            if (info) {
+                diagDeviceInfo.innerHTML = `
+                    <strong>Product:</strong> ${info.product}<br>
+                    <strong>Path:</strong> ${info.path}<br>
+                    <strong>VendorID:</strong> ${info.vendorId} (0x${info.vendorId.toString(16)})<br>
+                    <strong>ProductID:</strong> ${info.productId} (0x${info.productId.toString(16)})
+                `;
+            } else {
+                diagDeviceInfo.textContent = 'No Busylight device connected.';
+            }
+        } catch (e) {
+            diagDeviceInfo.textContent = 'Error fetching device info.';
+            console.error(e);
+        }
+    }
+
+    function updateManualModeUI() {
+        if (diagManualMode.checked) {
+            diagControls.style.opacity = '1';
+            diagControls.style.pointerEvents = 'auto';
+            updateManualState();
+        } else {
+            diagControls.style.opacity = '0.5';
+            diagControls.style.pointerEvents = 'none';
+        }
+    }
+
+    function updateManualState() {
+        if (!diagManualMode.checked) return;
+
+        const temp = parseInt(diagTemp.value, 10);
+        const pulse = diagPulse.checked;
+
+        window.api.applyManualState({
+            temp: temp,
+            pulse: pulse,
+            maxBrightness: 100, // Full brightness for testing
+            pulseSpeed: 1000 // Standard speed
+        });
+    }
+
+    openDiagnosticsLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        toggleDiagnostics(true);
+    });
+
+    diagClose.addEventListener('click', () => {
+        toggleDiagnostics(false);
+    });
+
+    diagManualMode.addEventListener('change', () => {
+        window.api.setManualMode(diagManualMode.checked);
+        updateManualModeUI();
+    });
+
+    diagTemp.addEventListener('input', () => {
+        const cVal = parseInt(diagTemp.value, 10);
+        const fVal = Math.round((cVal * 1.8) + 32);
+        diagTempValue.textContent = `${cVal}°C / ${fVal}°F`;
+        updateManualState();
+    });
+
+    diagPulse.addEventListener('change', updateManualState);
 });

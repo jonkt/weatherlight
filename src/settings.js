@@ -32,6 +32,12 @@ async function updateUIState() {
     const isOWM = providerSelect.value === 'openweathermap';
     apiKeyContainer.style.display = isOWM ? 'block' : 'none';
 
+    // Dynamic Resizing
+    // Open-Meteo needs less vertical space (no API key field)
+    // OWM needs more (API key field + potentially help box)
+    const newHeight = isOWM ? 850 : 760;
+    window.api.resizeSettings(newHeight);
+
     // 2. Auto-Location logic
     const isAuto = autoLocationInput.checked;
     locationInput.disabled = isAuto;
@@ -70,7 +76,7 @@ async function validateLocation() {
         locationInput.value = result.name;
         setStatus('✔ Location OK', '#28a745');
     } else {
-        setStatus(`✖ ${result.error || 'Invalid location'}`, '#dc3545');
+        setStatus(`✖ Location not found; please use this format: City, Country`, '#dc3545');
     }
 }
 
@@ -161,18 +167,24 @@ Promise.all([
     const helpIcon = document.getElementById('apiKeyHelpIcon');
     const helpBox = document.getElementById('apiKeyHelp');
     const owmLink = document.getElementById('owmLink');
+    const openMeteoLink = document.getElementById('openMeteoLink');
 
     helpIcon.addEventListener('click', (e) => {
         e.preventDefault();
         helpBox.style.display = helpBox.style.display === 'block' ? 'none' : 'block';
     });
 
-    // Simple mock for link opening if we didn't expose shell
     owmLink.addEventListener('click', (e) => {
-        // e.preventDefault();
-        // Ideally call window.api.openExternal('https://openweathermap.org')
-        // For now, let it try default behavior or just be text.
+        e.preventDefault();
+        window.api.openExternal('https://openweathermap.org');
     });
+
+    if (openMeteoLink) {
+        openMeteoLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.api.openExternal('https://open-meteo.com/');
+        });
+    }
 
     updateUIState();
 });

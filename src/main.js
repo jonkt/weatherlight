@@ -2,7 +2,7 @@
  * @fileoverview Main entry point. orchestrates services and app lifecycle.
  */
 
-const { app, Tray, Menu, ipcMain, BrowserWindow, nativeImage } = require('electron');
+const { app, Tray, Menu, ipcMain, BrowserWindow, nativeImage, shell } = require('electron');
 const path = require('path');
 const configService = require('./services/config-service');
 const weatherService = require('./services/weather-service');
@@ -112,7 +112,7 @@ function openSettingsWindow() {
     }
     settingsWin = new BrowserWindow({
         width: 500,
-        height: 700,
+        height: 760,
         resizable: true,
         icon: path.join(__dirname, 'sun_icon.png'),
         minimizable: false,
@@ -149,6 +149,16 @@ ipcMain.on('icon-data-url', (event, dataURL) => {
     if (tray) {
         const image = nativeImage.createFromDataURL(dataURL);
         tray.setImage(image);
+    }
+});
+
+ipcMain.on('open-external', (event, url) => {
+    shell.openExternal(url);
+});
+
+ipcMain.on('resize-settings', (event, height) => {
+    if (settingsWin) {
+        settingsWin.setSize(500, height);
     }
 });
 

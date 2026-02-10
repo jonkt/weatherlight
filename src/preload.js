@@ -11,5 +11,7 @@ contextBridge.exposeInMainWorld('api', {
     onSetIconColor: (callback) => ipcRenderer.on('set-icon-color', (event, ...args) => callback(...args)),
     sendIconData: (dataURL) => ipcRenderer.send('icon-data-url', dataURL),
 
-    getWeatherState: () => ipcRenderer.invoke('get-weather-state')
+    getWeatherState: () => ipcRenderer.invoke('get-weather-state'),
+    openExternal: (url) => ipcRenderer.send('open-external', url),
+    resizeSettings: (height) => ipcRenderer.send('resize-settings', height)
 });

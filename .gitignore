@@ -1,5 +1,8 @@
-# Ignore the entire node_modules directory
+# Ignore common large or temporary directories
 node_modules/
+dist/
+test_output/
+build/
 
 # Ignore other common large or temporary files
 *.log

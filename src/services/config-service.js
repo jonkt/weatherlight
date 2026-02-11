@@ -14,9 +14,9 @@ const DEFAULT_CONFIG = {
     autoLocation: true,
     geo: null, // Cached { lat, lon }
     pulse: true,
-    pulseSpeed: 5000,
-    sunsetSunrise: false,
-    maxBrightness: 60, // Default to 60%
+    pulseSpeed: 2000, // Default to 2s
+    sunsetSunrise: true,
+    maxBrightness: 70, // Default to 70%
     apiKey: '',
     unit: 'C' // 'C' or 'F'
 };

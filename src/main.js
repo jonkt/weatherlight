@@ -23,20 +23,33 @@ app.whenReady().then(() => {
     busylightService.connect();
 
     // Initial fetch
-    fetchAndApplyWeather();
+    updateWeather();
 
     // Schedule periodic updates (15 mins)
-    weatherInterval = setInterval(fetchAndApplyWeather, 15 * 60 * 1000);
+    weatherInterval = setInterval(updateWeather, 15 * 60 * 1000);
 });
 
 app.on('window-all-closed', (e) => e.preventDefault());
 
 // --- Core Logic ---
 
-async function fetchAndApplyWeather() {
+// WEATHER STATE
+// Using global 'lastWeather' defined at top of file
+
+async function updateWeather() {
+    console.log('Updating weather...');
     const config = configService.get();
 
-    if (!config.location || !config.apiKey) {
+    // Check for "falsy" pulse logic: if user unchecked it, we must ensure it's off.
+    // However, busylightService logic handles this based on config passed to it? 
+    // No, updateWeather calls busylightService.animate(weather). 
+    // We should pass config to animate or let busylight service check config?
+    // Current design: busylightService.animate takes (weather, settings).
+
+    // Validation:
+    // 1. Location is always required.
+    // 2. API Key is only required if provider is OpenWeatherMap.
+    if (!config.location || (config.provider === 'openweathermap' && !config.apiKey)) {
         setTrayTooltip('Setup required');
         return;
     }
@@ -44,26 +57,27 @@ async function fetchAndApplyWeather() {
     const weather = await weatherService.fetch(config);
 
     if (weather && !weather.error) {
-        lastWeather = weather; // Store for Settings UI
+        lastWeather = weather; // Store for IPC
+        console.log(`Weather: ${weather.temperature}°C (${weather.locationName}), NightMode: ${weather.isNight}`);
 
+        // Update Tray Icon based on night mode
+        // If night mode is active, we might want a different icon or just let the color indicate
+        // Current requirement: "Update default Tray/Window icon". 
+        // We implemented dynamic icon coloring in icon_generator.
         // Determine Night Mode based on Config + Weather State
         const isNightMode = config.sunsetSunrise && weather.isNight;
 
-        let displayTemp = weather.temperature;
-        let unitLabel = '°C';
+        const displayTemp = config.unit === 'F' ? Math.round((weather.temperature * 9 / 5) + 32) : weather.temperature;
+        const unitLabel = config.unit === 'F' ? '°F' : '°C';
 
-        if (config.unit === 'F') {
-            displayTemp = Math.round((weather.temperature * 9 / 5) + 32);
-            unitLabel = '°F';
+        let currentTooltip = `${weather.locationName} — ${displayTemp}${unitLabel}`;
+        if (weather.hasPrecipitation) {
+            currentTooltip += ' (Precipitation)';
         }
-
-        let tooltip = `${weather.locationName} — ${displayTemp}${unitLabel}`;
         if (isNightMode) {
-            tooltip += ' (Night Mode)';
+            currentTooltip += ' (Night Mode)';
         }
-
-        console.log(`Weather: ${weather.temperature}°C (${displayTemp}${unitLabel}), NightMode: ${isNightMode}`);
-        setTrayTooltip(tooltip);
+        setTrayTooltip(currentTooltip);
 
         const color = busylightService.update(weather, config);
 
@@ -72,6 +86,7 @@ async function fetchAndApplyWeather() {
     } else {
         console.error('Weather update failed:', weather?.error);
         setTrayTooltip('Error fetching weather');
+        busylightService.off();
     }
 }
 
@@ -84,8 +99,21 @@ function setTrayTooltip(text) {
 function createTray() {
     tray = new Tray(path.join(__dirname, 'sun_icon.png'));
     const contextMenu = Menu.buildFromTemplate([
-        { label: 'Refresh', click: fetchAndApplyWeather },
+        { label: 'Refresh', click: updateWeather },
         { label: 'Settings', click: openSettingsWindow },
+        { type: 'separator' },
+        {
+            label: 'Start with Windows',
+            type: 'checkbox',
+            checked: app.getLoginItemSettings().openAtLogin,
+            click: (item) => {
+                if (item.checked) {
+                    app.setLoginItemSettings({ openAtLogin: true });
+                } else {
+                    app.setLoginItemSettings({ openAtLogin: false });
+                }
+            }
+        },
         { type: 'separator' },
         { label: 'Quit', click: () => app.quit() }
     ]);
@@ -112,8 +140,8 @@ function openSettingsWindow() {
         return;
     }
     settingsWin = new BrowserWindow({
-        width: 500,
-        height: 760,
+        width: 600,
+        height: 850, // Initial height, will be auto-sized
         resizable: true,
         icon: path.join(__dirname, 'sun_icon.png'),
         minimizable: false,
@@ -139,7 +167,7 @@ ipcMain.handle('get-weather-state', () => lastWeather);
 ipcMain.on('set-settings', (event, newSettings) => {
     configService.save(newSettings);
     if (settingsWin) settingsWin.close();
-    fetchAndApplyWeather();
+    updateWeather();
 });
 
 ipcMain.on('close-settings', () => {
@@ -159,7 +187,7 @@ ipcMain.on('open-external', (event, url) => {
 
 ipcMain.on('resize-settings', (event, height) => {
     if (settingsWin) {
-        settingsWin.setSize(500, height);
+        settingsWin.setSize(600, height);
     }
 });
 
@@ -178,7 +206,7 @@ ipcMain.handle('detect-location', async () => {
 
 ipcMain.on('set-manual-mode', (event, enabled) => {
     busylightService.setManualMode(enabled);
-    if (!enabled) fetchAndApplyWeather(); // Re-apply weather when disabling manual mode
+    if (!enabled) updateWeather(); // Re-apply weather when disabling manual mode
 });
 
 ipcMain.on('apply-manual-state', (event, state) => {

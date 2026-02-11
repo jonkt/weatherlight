@@ -2,23 +2,43 @@
  * @fileoverview Logic for the settings window.
  */
 
-const providerSelect = document.getElementById('provider');
-const apiKeyContainer = document.getElementById('apiKeyContainer');
-const apiKeyInput = document.getElementById('apiKey');
+document.addEventListener('DOMContentLoaded', () => {
+    initializeApp();
+});
 
-const autoLocationInput = document.getElementById('autoLocation');
-const locationInput = document.getElementById('location');
-const locationStatus = document.getElementById('location-status');
+let providerSelect, apiKeyContainer, apiKeyInput,
+    autoLocationInput, locationInput, locationStatus,
+    pulseInput, pulseSpeedContainer, pulseSpeedInput, pulseSpeedValue,
+    maxBrightnessInput, maxBrightnessValue, sunsetSunriseInput,
+    saveButton, closeButton;
 
-const pulseInput = document.getElementById('pulse');
-const pulseSpeedContainer = document.getElementById('pulse-speed-container');
-const pulseSpeedInput = document.getElementById('pulseSpeed');
-const pulseSpeedValue = document.getElementById('pulseSpeedValue');
-const maxBrightnessInput = document.getElementById('maxBrightness');
-const maxBrightnessValue = document.getElementById('maxBrightnessValue');
-const sunsetSunriseInput = document.getElementById('sunsetSunrise');
-const saveButton = document.getElementById('save');
-const closeButton = document.getElementById('close');
+// Move initialization into a function
+function initializeApp() {
+    providerSelect = document.getElementById('provider');
+    apiKeyContainer = document.getElementById('apiKeyContainer');
+    apiKeyInput = document.getElementById('apiKey');
+
+    autoLocationInput = document.getElementById('autoLocation');
+    locationInput = document.getElementById('location');
+    locationStatus = document.getElementById('location-status');
+
+    pulseInput = document.getElementById('pulse');
+    pulseSpeedContainer = document.getElementById('pulse-speed-container');
+    pulseSpeedInput = document.getElementById('pulseSpeed');
+    pulseSpeedValue = document.getElementById('pulseSpeedValue');
+    maxBrightnessInput = document.getElementById('maxBrightness');
+    maxBrightnessValue = document.getElementById('maxBrightnessValue');
+    sunsetSunriseInput = document.getElementById('sunsetSunrise');
+    saveButton = document.getElementById('save');
+    closeButton = document.getElementById('close');
+
+    // Attach Listeners
+    attachListeners();
+
+    // Start Logic
+    startAsyncLogic();
+}
+
 
 // --- Helper Functions ---
 
@@ -27,51 +47,69 @@ function setStatus(text, color) {
     locationStatus.style.color = color;
 }
 
+async function detectAndPopulateLocation() {
+    locationInput.placeholder = "Detecting location...";
+    locationInput.value = "Detecting location...";
+    setStatus('Detecting location...', '#666');
+
+    try {
+        const detected = await window.api.detectLocation();
+        if (detected && detected.city) {
+            locationInput.value = `${detected.city}, ${detected.country}`;
+            setStatus('✔ Location detected', '#28a745');
+        } else {
+            locationInput.value = "";
+            setStatus('Could not detect location', 'red');
+        }
+    } catch (e) {
+        console.error(e);
+        locationInput.value = "";
+        setStatus('Detection failed', 'red');
+    }
+}
+
 async function updateUIState() {
     // 1. Provider logic
     const isOWM = providerSelect.value === 'openweathermap';
     apiKeyContainer.style.display = isOWM ? 'block' : 'none';
 
-    // Dynamic Resizing
-    // Open-Meteo needs less vertical space (no API key field)
-    // OWM needs more (API key field + potentially help box)
-    const newHeight = isOWM ? 900 : 810;
-    window.api.resizeSettings(newHeight);
+    // 2. Pulse logic
+    const isPulse = pulseInput.checked;
+    pulseSpeedContainer.style.display = isPulse ? 'block' : 'none';
 
-    // 2. Auto-Location logic
+    // 3. Auto-Location logic
     const isAuto = autoLocationInput.checked;
     locationInput.disabled = isAuto;
 
     if (isAuto) {
         locationInput.placeholder = "Auto-detecting...";
-        setStatus('Location will be detected automatically.', '#666');
-
-        try {
-            // Attempt to detect location immediately
-            const detected = await window.api.detectLocation();
-            if (detected && detected.city) {
-                locationInput.value = `${detected.city}, ${detected.country}`;
-                setStatus('✔ Location OK (Auto)', '#28a745');
-            } else {
-                // Fallback to existing state if detection fails
-                const weather = await window.api.getWeatherState();
-                if (weather?.locationName) {
-                    locationInput.value = weather.locationName;
-                }
-            }
-        } catch (e) {
-            console.error('Failed to get weather state for auto-location', e);
-        }
+        // We do typically show the current detected value here, 
+        // but the actual detection is triggered by the change event or init.
+        // If the value is empty/placeholder, we might want to trigger detection?
+        // But for now, we rely on the specific triggers.
     } else {
         locationInput.placeholder = "City, Country";
-        if (!locationInput.value) setStatus('', 'inherit');
-        else validateLocation(); // Re-validate if switching to manual and value exists
+        if (locationInput.value === "Detecting location...") {
+            locationInput.value = "";
+        }
+    }
+
+    updateWindowSize();
+}
+
+function updateWindowSize() {
+    // Calculate total height of container plus some padding
+    const container = document.querySelector('.container');
+    if (container) {
+        // Add a bit of buffer for the window frame/margins
+        const height = container.scrollHeight + 100;
+        window.api.resizeSettings(height);
     }
 }
 
 async function validateLocation() {
     const loc = locationInput.value.trim();
-    if (autoLocationInput.checked || !loc) return;
+    if (autoLocationInput.checked || !loc || loc === "Detecting location...") return;
 
     setStatus('Validating...', '#666');
     // Validation strategy depends on provider only if key is needed, 
@@ -90,51 +128,91 @@ async function validateLocation() {
 
 // --- Event Listeners ---
 
-providerSelect.addEventListener('change', updateUIState);
-autoLocationInput.addEventListener('change', updateUIState);
+function attachListeners() {
+    providerSelect.addEventListener('change', updateUIState);
 
-locationInput.addEventListener('blur', validateLocation);
-locationInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') validateLocation();
-});
+    autoLocationInput.addEventListener('change', (e) => {
+        updateUIState();
+        if (autoLocationInput.checked) {
+            detectAndPopulateLocation();
+        }
+    });
 
-pulseInput.addEventListener('change', () => {
-    pulseSpeedContainer.style.display = pulseInput.checked ? 'block' : 'none';
-});
+    locationInput.addEventListener('blur', validateLocation);
+    locationInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') validateLocation();
+    });
 
-pulseSpeedInput.addEventListener('input', () => {
-    pulseSpeedValue.textContent = `${parseFloat(pulseSpeedInput.value).toFixed(1)}s`;
-});
+    pulseInput.addEventListener('change', updateUIState);
 
-maxBrightnessInput.addEventListener('input', () => {
-    maxBrightnessValue.textContent = `${maxBrightnessInput.value}%`;
-});
+    pulseSpeedInput.addEventListener('input', () => {
+        pulseSpeedValue.textContent = `${parseFloat(pulseSpeedInput.value).toFixed(1)}s`;
+    });
 
-saveButton.addEventListener('click', () => {
-    const settings = {
-        provider: providerSelect.value,
-        unit: document.querySelector('input[name="unit"]:checked').value,
-        autoLocation: autoLocationInput.checked,
-        location: locationInput.value.trim(),
-        apiKey: apiKeyInput.value.trim(),
-        pulse: pulseInput.checked,
-        pulseSpeed: Math.round(parseFloat(pulseSpeedInput.value) * 1000),
-        maxBrightness: parseInt(maxBrightnessInput.value, 10),
-        sunsetSunrise: sunsetSunriseInput.checked
-    };
-    window.api.saveSettings(settings);
-});
+    maxBrightnessInput.addEventListener('input', () => {
+        maxBrightnessValue.textContent = `${maxBrightnessInput.value}%`;
+    });
 
-closeButton.addEventListener('click', () => {
-    window.api.closeSettings();
-});
+    saveButton.addEventListener('click', () => {
+        const settings = {
+            provider: providerSelect.value,
+            unit: document.querySelector('input[name="unit"]:checked').value,
+            autoLocation: autoLocationInput.checked,
+            location: locationInput.value.trim(),
+            apiKey: apiKeyInput.value.trim(),
+            pulse: pulseInput.checked,
+            pulseSpeed: Math.round(parseFloat(pulseSpeedInput.value) * 1000),
+            maxBrightness: parseInt(maxBrightnessInput.value, 10),
+            sunsetSunrise: sunsetSunriseInput.checked
+        };
+        window.api.saveSettings(settings);
+    });
+
+    closeButton.addEventListener('click', () => {
+        window.api.closeSettings();
+    });
+}
 
 // --- Initialize ---
 
-Promise.all([
-    window.api.getSettings(),
-    window.api.getWeatherState()
-]).then(([settings, weather]) => {
+async function startAsyncLogic() {
+
+    // Load current settings
+    const settings = await window.api.getSettings();
+    const weather = await window.api.getWeatherState();
+    // Check for Device
+    try {
+        const deviceInfo = await window.api.getDeviceInfo();
+        if (!deviceInfo) {
+            // No device found
+            document.getElementById('device-warning').style.display = 'block';
+
+            // Disable light controls
+            const lightControls = [
+                'maxBrightness',
+                'pulse',
+                'pulseSpeed',
+                'sunsetSunrise'
+            ];
+
+            lightControls.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.disabled = true;
+                    // Visually dim the parent container
+                    const settingContainer = el.closest('.setting');
+                    if (settingContainer) {
+                        settingContainer.style.opacity = '0.5';
+                        settingContainer.style.pointerEvents = 'none'; // Prevent interaction
+                    }
+                }
+            });
+        }
+    } catch (e) {
+        console.error('Failed to check device info:', e);
+    }
+
+    // Populate UI
     providerSelect.value = settings.provider || 'open-meteo';
 
     // Unit Logic
@@ -147,10 +225,16 @@ Promise.all([
     autoLocationInput.checked = settings.autoLocation !== false;
 
     // Display detected location if available and auto-mode is on
-    if (settings.autoLocation && weather?.locationName) {
-        locationInput.value = weather.locationName;
+    if (!settings.autoLocation) {
+        locationInput.value = settings.location || weather?.locationName || '';
     } else {
-        locationInput.value = settings.location || '';
+        // Auto-mode: use weather state (if valid/fresh) or trigger detection
+        if (weather && weather.locationName) {
+            locationInput.value = weather.locationName;
+            setStatus('✔ Using detected location', '#28a745');
+        } else {
+            detectAndPopulateLocation();
+        }
     }
 
     apiKeyInput.value = settings.apiKey || '';
@@ -189,6 +273,7 @@ Promise.all([
     helpIcon.addEventListener('click', (e) => {
         e.preventDefault();
         helpBox.style.display = helpBox.style.display === 'block' ? 'none' : 'block';
+        updateWindowSize();
     });
 
     owmLink.addEventListener('click', (e) => {
@@ -232,6 +317,7 @@ Promise.all([
             updateManualModeUI();
             window.api.setManualMode(false);
         }
+        updateWindowSize();
     }
 
     async function loadDiagnostics() {
@@ -240,11 +326,11 @@ Promise.all([
             const info = await window.api.getDeviceInfo();
             if (info) {
                 diagDeviceInfo.innerHTML = `
-                    <strong>Product:</strong> ${info.product}<br>
-                    <strong>Path:</strong> ${info.path}<br>
-                    <strong>VendorID:</strong> ${info.vendorId} (0x${info.vendorId.toString(16)})<br>
-                    <strong>ProductID:</strong> ${info.productId} (0x${info.productId.toString(16)})
-                `;
+                        <strong>Product:</strong> ${info.product}<br>
+                        <strong>Path:</strong> ${info.path}<br>
+                        <strong>VendorID:</strong> ${info.vendorId} (0x${info.vendorId.toString(16)})<br>
+                        <strong>ProductID:</strong> ${info.productId} (0x${info.productId.toString(16)})
+                    `;
             } else {
                 diagDeviceInfo.textContent = 'No Busylight device connected.';
             }
@@ -301,4 +387,4 @@ Promise.all([
     });
 
     diagPulse.addEventListener('change', updateManualState);
-});
+}

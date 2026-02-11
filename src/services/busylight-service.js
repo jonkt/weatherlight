@@ -53,7 +53,9 @@ class BusylightService {
         // Active Mode: Apply light settings
         if (weather.hasPrecipitation && config.pulse) {
             const high = this.applyBrightness(color, config.maxBrightness);
-            const low = this.applyBrightness(color, config.maxBrightness / 2);
+            // Use a much lower floor (5% of max) to maximize contrast and resolution steps
+            const lowAmt = Math.max(1, config.maxBrightness * 0.05);
+            const low = this.applyBrightness(color, lowAmt);
             this.device.pulse([high, low], config.pulseSpeed);
             console.log(`Pulsing ${color} (Precipitation)`);
         } else {

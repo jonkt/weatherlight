@@ -158,6 +158,17 @@
         }
 
         /* Hidden by default for Open-Meteo */
+        .warning-banner {
+            display: none;
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeeba;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 
@@ -165,6 +176,7 @@
     <div class="container">
         <div id="mainSettings">
             <h2>Configuration</h2>
+            <div id="device-warning" class="warning-banner">Attach a Kuando Busylight for light control</div>
 
             <div class="setting">
                 <label for="provider">Weather Provider</label>
@@ -223,15 +235,15 @@
             </div>
 
             <div class="setting" id="pulse-speed-container">
-                <span class="range-value" id="pulseSpeedValue">5.0s</span>
+                <span class="range-value" id="pulseSpeedValue">2.0s</span>
                 <label for="pulseSpeed">Pulse Speed</label>
-                <input type="range" id="pulseSpeed" min="0.5" max="10" step="0.1">
+                <input type="range" id="pulseSpeed" min="0.5" max="10" step="0.1" value="2.0">
             </div>
 
             <div class="setting">
-                <span class="range-value" id="maxBrightnessValue">60%</span>
+                <span class="range-value" id="maxBrightnessValue">70%</span>
                 <label for="maxBrightness">Max Brightness</label>
-                <input type="range" id="maxBrightness" min="10" max="100" step="1">
+                <input type="range" id="maxBrightness" min="10" max="100" step="1" value="70">
             </div>
 
             <div class="setting checkbox-container">

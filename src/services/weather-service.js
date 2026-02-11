@@ -83,11 +83,36 @@ class WeatherService {
      */
     async geocodeOpenWeatherMap(location, apiKey) {
         try {
-            const url = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(location)}&limit=1&appid=${apiKey}`;
+            // Split "City, Country" -> search for "City", then filter by "Country"
+            const parts = location.split(',').map(s => s.trim());
+            const searchTerm = parts[0];
+            const context = parts.length > 1 ? parts.slice(1).join(' ').toLowerCase() : null;
+
+            // Request 5 results to allow for filtering
+            const url = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(searchTerm)}&limit=5&appid=${apiKey}`;
             const resp = await axios.get(url, { timeout: 10000 });
-            if (resp.data?.[0]) {
-                const { lat, lon, name, country } = resp.data[0];
-                return { lat, lon, name: `${name}, ${country}` };
+
+            if (resp.data?.length > 0) {
+                let bestMatch = resp.data[0];
+
+                if (context) {
+                    const match = resp.data.find(r => {
+                        const country = (r.country || '').toLowerCase(); // e.g., 'GB', 'US'
+                        const state = (r.state || '').toLowerCase(); // e.g., 'England', 'Texas'
+
+                        // OWM returns ISO codes for country usually, but state is full name.
+                        // We check if input context matches state or country.
+                        return country === context ||
+                            state.includes(context) ||
+                            context.includes(state) ||
+                            (context.length === 2 && country === context); // strict ISO check if 2 chars
+                    });
+                    if (match) bestMatch = match;
+                }
+
+                const { lat, lon, name, country, state } = bestMatch;
+                const displayName = state ? `${name}, ${state}, ${country}` : `${name}, ${country}`;
+                return { lat, lon, name: displayName, country: country };
             }
         } catch (e) { console.error('OWM Geocode Error:', e.message); }
         return null;
@@ -98,13 +123,42 @@ class WeatherService {
      */
     async geocodeOpenMeteo(location) {
         try {
-            const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=en&format=json`;
+            // Split "City, Country" -> search for "City", then filter by "Country"
+            const parts = location.split(',').map(s => s.trim());
+            const searchTerm = parts[0];
+            const context = parts.length > 1 ? parts.slice(1).join(' ').toLowerCase() : null;
+
+            const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(searchTerm)}&count=10&language=en&format=json`;
             const resp = await axios.get(url, { timeout: 10000 });
-            if (resp.data?.results?.[0]) {
-                const { latitude, longitude, name, country } = resp.data.results[0];
-                return { lat: latitude, lon: longitude, name: `${name}, ${country}` };
+
+            if (resp.data?.results?.length > 0) {
+                let bestMatch = resp.data.results[0];
+
+                if (context) {
+                    // Try to find a result where Country or Admin1 matches the context
+                    const match = resp.data.results.find(r => {
+                        const country = (r.country || '').toLowerCase();
+                        const admin1 = (r.admin1 || '').toLowerCase();
+                        const admin2 = (r.admin2 || '').toLowerCase(); // e.g., County
+
+                        // Simple inclusion check
+                        return country.includes(context) ||
+                            admin1.includes(context) ||
+                            admin2.includes(context) ||
+                            context.includes(country) || // Handle "USA" vs "United States" approx
+                            context.includes(admin1);
+                    });
+                    if (match) bestMatch = match;
+                }
+
+                const { latitude, longitude, name, country, admin1 } = bestMatch;
+                // Add admin1 (Region/State) to name if available for clarity
+                const displayName = admin1 ? `${name}, ${admin1}, ${country}` : `${name}, ${country}`;
+                return { lat: latitude, lon: longitude, name: displayName, country: country };
             }
-        } catch (e) { console.error('Open-Meteo Geocode Error:', e.message); }
+        } catch (e) {
+            console.error('Open-Meteo Geocode Error:', e.message);
+        }
         return null;
     }
 

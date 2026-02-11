@@ -10,6 +10,7 @@ let providerSelect, apiKeyContainer, apiKeyInput,
     autoLocationInput, locationInput, locationStatus,
     pulseInput, pulseSpeedContainer, pulseSpeedInput, pulseSpeedValue,
     maxBrightnessInput, maxBrightnessValue, sunsetSunriseInput,
+    tempHorizonSelect, precipHorizonSelect,
     saveButton, closeButton;
 
 // Move initialization into a function
@@ -22,13 +23,22 @@ function initializeApp() {
     locationInput = document.getElementById('location');
     locationStatus = document.getElementById('location-status');
 
-    pulseInput = document.getElementById('pulse');
+    locationInput = document.getElementById('location');
+    locationStatus = document.getElementById('location-status');
+
     pulseSpeedContainer = document.getElementById('pulse-speed-container');
     pulseSpeedInput = document.getElementById('pulseSpeed');
     pulseSpeedValue = document.getElementById('pulseSpeedValue');
     maxBrightnessInput = document.getElementById('maxBrightness');
     maxBrightnessValue = document.getElementById('maxBrightnessValue');
     sunsetSunriseInput = document.getElementById('sunsetSunrise');
+
+    // Temp/Precip Horizon Logic (Select Dropdowns)
+    tempHorizonSelect = document.getElementById('tempHorizon');
+    precipHorizonSelect = document.getElementById('precipHorizon');
+
+    // ...
+
     saveButton = document.getElementById('save');
     closeButton = document.getElementById('close');
 
@@ -38,7 +48,6 @@ function initializeApp() {
     // Start Logic
     startAsyncLogic();
 }
-
 
 // --- Helper Functions ---
 
@@ -74,7 +83,8 @@ async function updateUIState() {
     apiKeyContainer.style.display = isOWM ? 'block' : 'none';
 
     // 2. Pulse logic
-    const isPulse = pulseInput.checked;
+    const precipHorizonVal = precipHorizonSelect.value || 'none';
+    const isPulse = precipHorizonVal !== 'none';
     pulseSpeedContainer.style.display = isPulse ? 'block' : 'none';
 
     // 3. Auto-Location logic
@@ -83,10 +93,6 @@ async function updateUIState() {
 
     if (isAuto) {
         locationInput.placeholder = "Auto-detecting...";
-        // We do typically show the current detected value here, 
-        // but the actual detection is triggered by the change event or init.
-        // If the value is empty/placeholder, we might want to trigger detection?
-        // But for now, we rely on the specific triggers.
     } else {
         locationInput.placeholder = "City, Country";
         if (locationInput.value === "Detecting location...") {
@@ -112,9 +118,6 @@ async function validateLocation() {
     if (autoLocationInput.checked || !loc || loc === "Detecting location...") return;
 
     setStatus('Validating...', '#666');
-    // Validation strategy depends on provider only if key is needed, 
-    // but simplified logic in main uses Open-Meteo for validation generally unless OWM key is set.
-    // Here we just call the main process validator.
 
     const result = await window.api.validateLocation(loc);
 
@@ -125,8 +128,6 @@ async function validateLocation() {
         setStatus(`✖ Location not found; please use this format: City, Country`, '#dc3545');
     }
 }
-
-// --- Event Listeners ---
 
 function attachListeners() {
     providerSelect.addEventListener('change', updateUIState);
@@ -143,7 +144,8 @@ function attachListeners() {
         if (e.key === 'Enter') validateLocation();
     });
 
-    pulseInput.addEventListener('change', updateUIState);
+    // Listener for precip horizon select
+    precipHorizonSelect.addEventListener('change', updateUIState);
 
     pulseSpeedInput.addEventListener('input', () => {
         pulseSpeedValue.textContent = `${parseFloat(pulseSpeedInput.value).toFixed(1)}s`;
@@ -160,10 +162,13 @@ function attachListeners() {
             autoLocation: autoLocationInput.checked,
             location: locationInput.value.trim(),
             apiKey: apiKeyInput.value.trim(),
-            pulse: pulseInput.checked,
+            // Pulse is enabled if precipHorizon is NOT 'none'
+            pulse: precipHorizonSelect.value !== 'none',
             pulseSpeed: Math.round(parseFloat(pulseSpeedInput.value) * 1000),
             maxBrightness: parseInt(maxBrightnessInput.value, 10),
-            sunsetSunrise: sunsetSunriseInput.checked
+            sunsetSunrise: sunsetSunriseInput.checked,
+            tempHorizon: tempHorizonSelect.value,
+            precipHorizon: precipHorizonSelect.value
         };
         window.api.saveSettings(settings);
     });
@@ -173,74 +178,38 @@ function attachListeners() {
     });
 }
 
-// --- Initialize ---
+// ...
 
 async function startAsyncLogic() {
-
-    // Load current settings
     const settings = await window.api.getSettings();
     const weather = await window.api.getWeatherState();
-    // Check for Device
-    try {
-        const deviceInfo = await window.api.getDeviceInfo();
-        if (!deviceInfo) {
-            // No device found
-            document.getElementById('device-warning').style.display = 'block';
 
-            // Disable light controls
-            const lightControls = [
-                'maxBrightness',
-                'pulse',
-                'pulseSpeed',
-                'sunsetSunrise'
-            ];
-
-            lightControls.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) {
-                    el.disabled = true;
-                    // Visually dim the parent container
-                    const settingContainer = el.closest('.setting');
-                    if (settingContainer) {
-                        settingContainer.style.opacity = '0.5';
-                        settingContainer.style.pointerEvents = 'none'; // Prevent interaction
-                    }
-                }
-            });
-        }
-    } catch (e) {
-        console.error('Failed to check device info:', e);
-    }
-
-    // Populate UI
+    // Set values
     providerSelect.value = settings.provider || 'open-meteo';
 
-    // Unit Logic
-    if (settings.unit === 'F') {
-        document.getElementById('unitF').checked = true;
-    } else {
-        document.getElementById('unitC').checked = true;
-    }
+    // Set Unit Radio
+    const unitVal = settings.unit || 'C';
+    const unitRadio = document.querySelector(`input[name="unit"][value="${unitVal}"]`);
+    if (unitRadio) unitRadio.checked = true;
 
-    autoLocationInput.checked = settings.autoLocation !== false;
+    autoLocationInput.checked = settings.autoLocation || false;
 
-    // Display detected location if available and auto-mode is on
-    if (!settings.autoLocation) {
-        locationInput.value = settings.location || weather?.locationName || '';
-    } else {
-        // Auto-mode: use weather state (if valid/fresh) or trigger detection
-        if (weather && weather.locationName) {
-            locationInput.value = weather.locationName;
-            setStatus('✔ Using detected location', '#28a745');
-        } else {
-            detectAndPopulateLocation();
-        }
-    }
-
+    // API Key
     apiKeyInput.value = settings.apiKey || '';
 
-    pulseInput.checked = settings.pulse !== false;
-    pulseSpeedContainer.style.display = pulseInput.checked ? 'block' : 'none';
+    // Location
+    if (settings.autoLocation) {
+        if (weather && weather.locationName) {
+            locationInput.value = weather.locationName;
+        } else {
+            locationInput.value = "Detecting location...";
+        }
+    } else {
+        locationInput.value = settings.location || '';
+    }
+
+    // Pulse state is now derived from horizon
+    pulseSpeedContainer.style.display = settings.pulse ? 'block' : 'none';
 
     pulseSpeedInput.value = (settings.pulseSpeed || 5000) / 1000;
     pulseSpeedValue.textContent = `${parseFloat(pulseSpeedInput.value).toFixed(1)}s`;
@@ -249,6 +218,12 @@ async function startAsyncLogic() {
     maxBrightnessValue.textContent = `${maxBrightnessInput.value}%`;
 
     sunsetSunriseInput.checked = settings.sunsetSunrise || false;
+
+    // Set Select Values
+    tempHorizonSelect.value = settings.tempHorizon || 'current';
+    precipHorizonSelect.value = settings.precipHorizon || 'immediate';
+
+    // ...
 
     // Display Sun Times
     const sunTimesDiv = document.getElementById('sunTimes');

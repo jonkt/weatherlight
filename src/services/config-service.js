@@ -18,7 +18,9 @@ const DEFAULT_CONFIG = {
     sunsetSunrise: true,
     maxBrightness: 70, // Default to 70%
     apiKey: '',
-    unit: 'C' // 'C' or 'F'
+    unit: 'C', // 'C' or 'F'
+    precipHorizon: 'immediate', // 'immediate', 'short', 'day'
+    tempHorizon: 'current' // 'current', 'short_high', 'day_high'
 };
 
 class ConfigService {

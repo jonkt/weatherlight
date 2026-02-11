@@ -49,7 +49,7 @@ async function updateWeather() {
     // Validation:
     // 1. Location is always required.
     // 2. API Key is only required if provider is OpenWeatherMap.
-    if (!config.location || (config.provider === 'openweathermap' && !config.apiKey)) {
+    if ((!config.location && !config.autoLocation) || (config.provider === 'openweathermap' && !config.apiKey)) {
         setTrayTooltip('Setup required');
         return;
     }
@@ -140,7 +140,7 @@ function openSettingsWindow() {
         return;
     }
     settingsWin = new BrowserWindow({
-        width: 600,
+        width: 800,
         height: 850, // Initial height, will be auto-sized
         resizable: true,
         icon: path.join(__dirname, 'sun_icon.png'),
@@ -187,7 +187,7 @@ ipcMain.on('open-external', (event, url) => {
 
 ipcMain.on('resize-settings', (event, height) => {
     if (settingsWin) {
-        settingsWin.setSize(600, height);
+        settingsWin.setSize(800, height);
     }
 });
 

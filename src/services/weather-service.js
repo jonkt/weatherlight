@@ -55,9 +55,9 @@ class WeatherService {
 
         // 2. Fetch Weather
         if (config.provider === 'openweathermap' && config.apiKey) {
-            return this.fetchOpenWeatherMap(lat, lon, locationName, config.apiKey);
+            return this.fetchOpenWeatherMap(lat, lon, locationName, config.apiKey, config);
         } else {
-            return this.fetchOpenMeteo(lat, lon, locationName);
+            return this.fetchOpenMeteo(lat, lon, locationName, config);
         }
     }
 
@@ -165,30 +165,77 @@ class WeatherService {
     /**
      * Fetches from OpenWeatherMap.
      */
-    async fetchOpenWeatherMap(lat, lon, locationName, apiKey) {
+    async fetchOpenWeatherMap(lat, lon, locationName, apiKey, config) {
         try {
-            // Current (Sun times)
+            // Current Weather (for reliable current conditions/sun times)
             const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`;
             const weatherResp = await axios.get(weatherUrl, { timeout: 10000 });
+            const currentData = weatherResp.data;
 
             this.sunTimes = {
-                sunrise: new Date(weatherResp.data.sys.sunrise * 1000),
-                sunset: new Date(weatherResp.data.sys.sunset * 1000)
+                sunrise: new Date(currentData.sys.sunrise * 1000),
+                sunset: new Date(currentData.sys.sunset * 1000)
             };
 
-            // Forecast
+            // Forecast (3-hour blocks)
             const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`;
             const forecastResp = await axios.get(forecastUrl, { timeout: 10000 });
+            const list = forecastResp.data.list || [];
 
-            const nextHour = forecastResp.data.list?.[0];
-            if (!nextHour) return { error: 'No forecast data' };
+            if (list.length === 0) return { error: 'No forecast data' };
 
-            const isRaining = nextHour.rain && nextHour.rain['3h'] > 0;
-            const isSnowing = nextHour.snow && nextHour.snow['3h'] > 0;
-            const hasPrecipitation = Boolean((nextHour.pop > 0.1) || isRaining || isSnowing);
+            // Determine check window based on horizon
+            // OWM gives 3h blocks. 
+            // immediate: 1 block (3h)
+            // short: 2 blocks (6h)
+            // today: blocks until midnight
+            // day: 8 blocks (24h)
+
+            // Calculate blocks remaining today
+            // OWM forecast starts from "now" (rounded to nearest 3h usually)
+            // We can approximate by checking the date of the forecast items.
+            // But simpler: calculate hours left in day / 3.
+            const now = new Date();
+            const hoursLeft = 24 - now.getHours();
+            const blocksLeftToday = Math.ceil(hoursLeft / 3);
+
+            let precipBlocks = 1;
+            if (config.precipHorizon === 'none') precipBlocks = 0;
+            else if (config.precipHorizon === 'short') precipBlocks = 2;
+            else if (config.precipHorizon === 'today') precipBlocks = blocksLeftToday;
+            else if (config.precipHorizon === 'day') precipBlocks = 8;
+
+            let tempBlocks = 0; // 0 means use 'currentData'
+            if (config.tempHorizon === 'short_high') tempBlocks = 2;
+            else if (config.tempHorizon === 'today_high') tempBlocks = blocksLeftToday;
+            else if (config.tempHorizon === 'day_high') tempBlocks = 8;
+
+            // 1. Calculate Temperature
+            let temperature = currentData.main.temp;
+            if (tempBlocks > 0) {
+                // Find max temp in the window
+                const checkList = list.slice(0, tempBlocks);
+                if (checkList.length > 0) {
+                    const maxTemp = checkList.reduce((max, item) => Math.max(max, item.main.temp_max), -100);
+                    temperature = Math.max(temperature, maxTemp);
+                }
+            }
+
+            // 2. Calculate Precipitation
+            let hasPrecipitation = false;
+            // Only check if blocks > 0 (i.e. not 'none')
+            if (precipBlocks > 0) {
+                const checkList = list.slice(0, precipBlocks);
+                hasPrecipitation = checkList.some(item => {
+                    const rain = item.rain ? item.rain['3h'] : 0;
+                    const snow = item.snow ? item.snow['3h'] : 0;
+                    const pop = item.pop || 0;
+                    return (pop > 0.15) || (rain > 0.1) || (snow > 0.1);
+                });
+            }
 
             return {
-                temperature: nextHour.main.temp,
+                temperature,
                 hasPrecipitation,
                 locationName,
                 sunTimes: this.sunTimes,
@@ -204,9 +251,10 @@ class WeatherService {
     /**
      * Fetches from Open-Meteo.
      */
-    async fetchOpenMeteo(lat, lon, locationName) {
+    async fetchOpenMeteo(lat, lon, locationName, config) {
         try {
-            const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,precipitation_probability,rain,showers,snowfall&daily=sunrise,sunset&timezone=auto&forecast_days=1`;
+            const days = (config.precipHorizon === 'day' || config.tempHorizon === 'day_high') ? 2 : 1;
+            const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,precipitation_probability,rain,showers,snowfall&daily=sunrise,sunset&timezone=auto&forecast_days=${days}`;
             const resp = await axios.get(url, { timeout: 10000 });
             const data = resp.data;
 
@@ -218,18 +266,55 @@ class WeatherService {
                 };
             }
 
-            // Get current hour index
             const now = new Date();
-            const hourIndex = now.getHours();
-            // Open-Meteo returns 0-23 hours for today.
+            const currentHourIndex = now.getHours();
+            // Note: If requesting 2 days, hourly array is 48 items. 
+            // currentHourIndex is 0-23. If it's late, we just look ahead in array.
 
-            const temp = data.hourly.temperature_2m[hourIndex];
-            const precipProb = data.hourly.precipitation_probability[hourIndex];
-            const rain = data.hourly.rain[hourIndex];
-            const showers = data.hourly.showers[hourIndex];
-            const snow = data.hourly.snowfall[hourIndex];
+            // Determine Windows (in hours)
+            const hoursLeft = 24 - currentHourIndex;
 
-            const hasPrecipitation = (precipProb > 10) || (rain > 0) || (showers > 0) || (snow > 0);
+            let precipHours = 1;
+            if (config.precipHorizon === 'none') precipHours = 0;
+            else if (config.precipHorizon === 'short') precipHours = 6;
+            else if (config.precipHorizon === 'today') precipHours = hoursLeft;
+            else if (config.precipHorizon === 'day') precipHours = 24;
+
+            let tempHours = 0; // 0 = current
+            if (config.tempHorizon === 'short_high') tempHours = 6;
+            else if (config.tempHorizon === 'today_high') tempHours = hoursLeft;
+            else if (config.tempHorizon === 'day_high') tempHours = 24;
+
+            // 1. Calculate Temp
+            let temp = data.hourly.temperature_2m[currentHourIndex];
+            if (tempHours > 0) {
+                // Look ahead 'tempHours', but ensure we don't go out of bounds
+                const limit = Math.min(data.hourly.temperature_2m.length, currentHourIndex + tempHours);
+                let max = -100;
+                for (let i = currentHourIndex; i < limit; i++) {
+                    const t = data.hourly.temperature_2m[i];
+                    if (t > max) max = t;
+                }
+                temp = max;
+            }
+
+            // 2. Calculate Precip
+            let hasPrecipitation = false;
+            if (precipHours > 0) {
+                const limitP = Math.min(data.hourly.precipitation_probability.length, currentHourIndex + precipHours);
+
+                for (let i = currentHourIndex; i < limitP; i++) {
+                    const prob = data.hourly.precipitation_probability[i];
+                    const rain = data.hourly.rain[i];
+                    const showers = data.hourly.showers[i];
+                    const snow = data.hourly.snowfall[i];
+
+                    if ((prob > 15) || (rain > 0.1) || (showers > 0.1) || (snow > 0.1)) {
+                        hasPrecipitation = true;
+                        break;
+                    }
+                }
+            }
 
             return {
                 temperature: temp,

@@ -100,16 +100,105 @@ async function updateUIState() {
         }
     }
 
-    updateWindowSize();
-}
-
-function updateWindowSize() {
-    // Calculate total height of container plus some padding
+    // Initialize ResizeObserver to handle dynamic content changes
+    // We observe the container specifically to avoid feedback loops with the body/window height
     const container = document.querySelector('.container');
     if (container) {
-        // Add a bit of buffer for the window frame/margins
-        const height = container.scrollHeight + 100;
-        window.api.resizeSettings(height);
+        const resizeObserver = new ResizeObserver(entries => {
+            for (let entry of entries) {
+                let height;
+                if (entry.borderBoxSize && entry.borderBoxSize.length > 0) {
+                    height = entry.borderBoxSize[0].blockSize;
+                } else {
+                    height = entry.contentRect.height;
+                }
+
+                if (typeof height === 'number' && isFinite(height)) {
+                    // Add body padding (20px top + 20px bottom) + small buffer (5px)
+                    // This fixed calculation prevents the "growing window" bug
+                    // Use Math.ceil to ensure we send an integer
+                    window.api.resizeSettings(Math.ceil(height + 45));
+                }
+            }
+        });
+        resizeObserver.observe(container);
+    }
+}
+
+
+function updateWindowSize() {
+    // Fallback/Legacy: just triggers a check via observer indirectly or set timeout
+    // With observer on body, simple DOM changes should trigger it.
+    // We can leave this empty or force a check if needed.
+}
+
+// ... existing code ...
+
+async function loadDiagnostics() {
+    diagDeviceInfo.textContent = 'Loading...';
+    try {
+        const info = await window.api.getDeviceInfo();
+        if (info) {
+            diagDeviceInfo.innerHTML = `
+                        <strong>Product:</strong> ${info.product}<br>
+                        <strong>Path:</strong> ${info.path}<br>
+                        <strong>VendorID:</strong> ${info.vendorId} (0x${info.vendorId.toString(16)})<br>
+                        <strong>ProductID:</strong> ${info.productId} (0x${info.productId.toString(16)})
+                    `;
+        } else {
+            diagDeviceInfo.textContent = 'No Busylight device connected.';
+        }
+    } catch (e) {
+        diagDeviceInfo.textContent = 'Error fetching device info.';
+        console.error(e);
+    }
+
+    // Resize after device info loads
+    updateWindowSize();
+
+    // Load Weather Feed Info
+    const weatherDiv = document.getElementById('diag-weather-info');
+    if (weatherDiv) {
+        weatherDiv.textContent = 'Fetching weather data...';
+        try {
+            const weather = await window.api.getWeatherState();
+            if (weather) {
+                const updated = weather.lastUpdated ? new Date(weather.lastUpdated).toLocaleString() : 'Unknown';
+                const precip = weather.hasPrecipitation ? 'Yes' : 'No';
+                const night = weather.isNight ? 'Yes' : 'No';
+
+                weatherDiv.innerHTML = `
+                        <strong>Provider:</strong> ${weather.provider || 'Unknown'}<br>
+                        <strong>Location:</strong> ${weather.locationName || 'Unknown'}<br>
+                        <strong>Temperature:</strong> ${weather.temperature}°C<br>
+                        <strong>Precipitation:</strong> ${precip}<br>
+                        <strong>Night Mode:</strong> ${night}<br>
+                        <strong>Last Updated:</strong> ${updated}
+                    `;
+
+                // Populate Table
+                const tableBody = document.getElementById('diag-forecast-table');
+                if (tableBody && weather.debugForecast) {
+                    tableBody.innerHTML = weather.debugForecast.map(item => `
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 4px;">${new Date(item.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                                <td style="padding: 4px;">${item.temp.toFixed(1)}°</td>
+                                <td style="padding: 4px;">${Math.round(item.precipProb)}%</td>
+                                <td style="padding: 4px;">${item.precipType}</td>
+                            </tr>
+                        `).join('');
+                }
+
+            } else {
+                weatherDiv.textContent = 'No weather data available yet.';
+            }
+        } catch (e) {
+            weatherDiv.textContent = 'Error fetching weather data.';
+            console.error(e);
+        }
+
+        // Resize after weather data (and table) loads
+        updateWindowSize();
     }
 }
 

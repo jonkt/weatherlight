@@ -195,7 +195,7 @@ ipcMain.on('open-external', (event, url) => {
 
 ipcMain.on('resize-settings', (event, height) => {
     if (settingsWin) {
-        settingsWin.setSize(800, height);
+        settingsWin.setContentSize(800, height);
     }
 });
 

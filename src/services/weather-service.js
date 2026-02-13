@@ -240,7 +240,14 @@ class WeatherService {
                 locationName,
                 sunTimes: this.sunTimes,
                 isNight: this.checkIsNight(this.sunTimes),
-                provider: 'OpenWeatherMap'
+                provider: 'OpenWeatherMap',
+                lastUpdated: new Date(),
+                debugForecast: list.slice(0, 16).map(item => ({
+                    time: new Date(item.dt * 1000),
+                    temp: item.main.temp,
+                    precipProb: (item.pop || 0) * 100,
+                    precipType: item.rain ? 'Rain' : (item.snow ? 'Snow' : 'None')
+                }))
             };
         } catch (e) {
             console.error('OWM Fetch Error:', e.message);
@@ -322,7 +329,25 @@ class WeatherService {
                 locationName,
                 sunTimes: this.sunTimes,
                 isNight: this.checkIsNight(this.sunTimes),
-                provider: 'Open-Meteo'
+                provider: 'Open-Meteo',
+                lastUpdated: new Date(),
+                debugForecast: data.hourly.time.slice(currentHourIndex, currentHourIndex + 24).map((t, idx) => {
+                    const i = currentHourIndex + idx;
+                    const prob = data.hourly.precipitation_probability[i];
+                    const rain = data.hourly.rain[i];
+                    const showers = data.hourly.showers[i];
+                    const snow = data.hourly.snowfall[i];
+                    let type = 'None';
+                    if (snow > 0) type = 'Snow';
+                    else if (rain > 0 || showers > 0) type = 'Rain';
+
+                    return {
+                        time: new Date(t),
+                        temp: data.hourly.temperature_2m[i],
+                        precipProb: prob,
+                        precipType: type
+                    };
+                })
             };
 
         } catch (e) {

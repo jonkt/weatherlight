@@ -113,6 +113,90 @@ function updateWindowSize() {
     }
 }
 
+function updateHardwareStatus(connected) {
+    const statusDiv = document.getElementById('connection-status');
+
+    // Update footer text/icon
+    if (connected) {
+        statusDiv.innerHTML = '<span class="connection-indicator connected"></span> Hardware Connected';
+    } else {
+        statusDiv.innerHTML = '<span class="connection-indicator disconnected"></span> Hardware Disconnected';
+    }
+
+    // Disable/Enable Busylight-specific controls
+    // tempHorizon remains active (affects Tray Icon)
+    const hardwareInputs = [
+        precipHorizonSelect,
+        pulseSpeedInput,
+        maxBrightnessInput,
+        sunsetSunriseInput
+    ];
+
+    const warning = document.getElementById('device-warning');
+
+    if (connected) {
+        if (warning) warning.style.display = 'none';
+        hardwareInputs.forEach(el => {
+            el.disabled = false;
+            // Restore visual opacity if we dimmed parent containers? 
+            // Simplified: just rely on native disabled appearance or handle parents
+            const wrapper = el.closest('.setting') || el.closest('.select-wrapper');
+            if (wrapper) wrapper.style.opacity = '1';
+        });
+
+        // Specific handling for precip container which is inside a flex box
+        if (precipHorizonSelect) {
+            const wrapper = precipHorizonSelect.closest('.select-wrapper').parentElement; // The div with label
+            if (wrapper) wrapper.style.opacity = '1';
+        }
+
+    } else {
+        if (warning) warning.style.display = 'block';
+        hardwareInputs.forEach(el => {
+            el.disabled = true;
+            // Optional: Dim the containers for better visual cue
+            const wrapper = el.closest('.setting');
+            if (wrapper) wrapper.style.opacity = '0.5';
+        });
+
+        // Specific handling for precip container
+        if (precipHorizonSelect) {
+            const wrapper = precipHorizonSelect.closest('.select-wrapper').parentElement;
+            if (wrapper) wrapper.style.opacity = '0.5';
+        }
+    }
+
+    // Ensure window resizes to fit warning banner
+    setTimeout(updateWindowSize, 50);
+
+    // Diagnostics Manual Mode Handling
+    const diagManualMode = document.getElementById('diag-manual-mode');
+    const diagControls = document.getElementById('diag-controls');
+
+    if (diagManualMode) {
+        if (connected) {
+            diagManualMode.disabled = false;
+            // Restore opacity
+            if (diagManualMode.parentElement) diagManualMode.parentElement.style.opacity = '1';
+        } else {
+            diagManualMode.disabled = true;
+            // If it was checked, uncheck it and update UI/Backend
+            if (diagManualMode.checked) {
+                diagManualMode.checked = false;
+                window.api.setManualMode(false);
+            }
+            // Dim the container
+            if (diagManualMode.parentElement) diagManualMode.parentElement.style.opacity = '0.5';
+
+            // Ensure controls are visually disabled
+            if (diagControls) {
+                diagControls.style.opacity = '0.5';
+                diagControls.style.pointerEvents = 'none';
+            }
+        }
+    }
+}
+
 async function validateLocation() {
     const loc = locationInput.value.trim();
     if (autoLocationInput.checked || !loc || loc === "Detecting location...") return;
@@ -265,6 +349,15 @@ async function startAsyncLogic() {
 
     updateUIState();
 
+    // Initial Hardware Status
+    const isConnected = await window.api.getBusylightStatus();
+    updateHardwareStatus(isConnected);
+
+    // Listen for hardware changes
+    window.api.onBusylightStatus((connected) => {
+        updateHardwareStatus(connected);
+    });
+
     // --- Diagnostics Mode Logic ---
 
     const mainSettings = document.getElementById('mainSettings');
@@ -312,6 +405,48 @@ async function startAsyncLogic() {
         } catch (e) {
             diagDeviceInfo.textContent = 'Error fetching device info.';
             console.error(e);
+        }
+
+        // Load Weather Feed Info
+        const weatherDiv = document.getElementById('diag-weather-info');
+        if (weatherDiv) {
+            weatherDiv.textContent = 'Fetching weather data...';
+            try {
+                const weather = await window.api.getWeatherState();
+                if (weather) {
+                    const updated = weather.lastUpdated ? new Date(weather.lastUpdated).toLocaleString() : 'Unknown';
+                    const precip = weather.hasPrecipitation ? 'Yes' : 'No';
+                    const night = weather.isNight ? 'Yes' : 'No';
+
+                    weatherDiv.innerHTML = `
+                        <strong>Provider:</strong> ${weather.provider || 'Unknown'}<br>
+                        <strong>Location:</strong> ${weather.locationName || 'Unknown'}<br>
+                        <strong>Temperature:</strong> ${weather.temperature}°C<br>
+                        <strong>Precipitation:</strong> ${precip}<br>
+                        <strong>Night Mode:</strong> ${night}<br>
+                        <strong>Last Updated:</strong> ${updated}
+                    `;
+
+                    // Populate Table
+                    const tableBody = document.getElementById('diag-forecast-table');
+                    if (tableBody && weather.debugForecast) {
+                        tableBody.innerHTML = weather.debugForecast.map(item => `
+                            <tr style="border-bottom: 1px solid #eee;">
+                                <td style="padding: 4px;">${new Date(item.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                                <td style="padding: 4px;">${item.temp.toFixed(1)}°</td>
+                                <td style="padding: 4px;">${Math.round(item.precipProb)}%</td>
+                                <td style="padding: 4px;">${item.precipType}</td>
+                            </tr>
+                        `).join('');
+                    }
+
+                } else {
+                    weatherDiv.textContent = 'No weather data available yet.';
+                }
+            } catch (e) {
+                weatherDiv.textContent = 'Error fetching weather data.';
+                console.error(e);
+            }
         }
     }
 

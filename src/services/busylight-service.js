@@ -2,13 +2,16 @@
  * @fileoverview Service for controlling the Kuando Busylight hardware.
  */
 
+const EventEmitter = require('events');
 const busylightModule = require('../../lib');
 const colorScale = require('../color-scale.js');
 
-class BusylightService {
+class BusylightService extends EventEmitter {
     constructor() {
+        super();
         this.device = null;
         this.manualMode = false;
+        this.isConnected = false;
     }
 
     /**
@@ -17,11 +20,39 @@ class BusylightService {
     connect() {
         try {
             this.device = busylightModule.get();
-            this.device.on('connected', () => console.log('Busylight connected.'));
-            this.device.on('disconnected', () => console.log('Busylight disconnected.'));
-            this.device.on('error', (err) => console.error('Busylight error:', err));
+
+            // Initial check
+            this.isConnected = !!this.device;
+            if (this.isConnected) {
+                console.log('Busylight connected.');
+                this.emit('connected');
+            }
+
+            // Listen for future events (if supported by lib, or simulate if we need to poll)
+            // Note: node-hid 'get' usually returns a device or throws/returns null immediately.
+            // The 'connected'/'disconnected' events depend on how the lib wrapper is implemented.
+            // Looking at the lib wrapper (implied), it returns a device object which might emit events.
+
+            if (this.device) {
+                this.device.on('connected', () => {
+                    console.log('Busylight connected.');
+                    this.isConnected = true;
+                    this.emit('connected');
+                });
+                this.device.on('disconnected', () => {
+                    console.log('Busylight disconnected.');
+                    this.isConnected = false;
+                    this.emit('disconnected');
+                });
+                this.device.on('error', (err) => {
+                    console.error('Busylight error:', err);
+                    // Treat error as disconnect if severe?
+                });
+            }
         } catch (e) {
             console.error('Failed to initialize Busylight:', e);
+            this.isConnected = false;
+            this.emit('disconnected');
         }
     }
 

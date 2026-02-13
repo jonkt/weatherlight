@@ -65,10 +65,11 @@ The central coordinator.
     - `get-device-info` / `set-manual-mode` / `apply-manual-state`: Diagnostics.
 
 ### 2. Services (`src/services/`)
-- **`config-service.js`**: Manages `config.json` in the User Data directory. Stores API keys, location, units (C/F), and preferences.
+- **`config-service.js`**: Manages `config.json`. Stores API keys, location, units (C/F), and preferences.
 - **`weather-service.js`**: 
     - Abstracts provider differences (Open-Meteo vs. OpenWeatherMap).
     - Handles **Auto-Location** via IP-API.
+    - **Forecast Horizons**: implementing logic to look ahead (Immediate, Short Term, Rest of Today, 24h) for both temperature highs and precipitation pulse.
     - Centralizes logic: Calculates `isNight` state based on sunrise/sunset.
     - Returns a unified `WeatherState` object.
 - **`busylight-service.js`**:

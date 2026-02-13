@@ -15,8 +15,10 @@ contextBridge.exposeInMainWorld('api', {
     openExternal: (url) => ipcRenderer.send('open-external', url),
     resizeSettings: (height) => ipcRenderer.send('resize-settings', height),
 
-    // Diagnostics
+    // Diagnostics & Status
     getDeviceInfo: () => ipcRenderer.invoke('get-device-info'),
+    getBusylightStatus: () => ipcRenderer.invoke('get-busylight-status'),
+    onBusylightStatus: (callback) => ipcRenderer.on('busylight-status', (event, ...args) => callback(...args)),
     setManualMode: (enabled) => ipcRenderer.send('set-manual-mode', enabled),
     applyManualState: (state) => ipcRenderer.send('apply-manual-state', state),
 

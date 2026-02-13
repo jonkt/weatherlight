@@ -22,6 +22,14 @@ app.whenReady().then(() => {
     createIconWindow();
     busylightService.connect();
 
+    // Busylight Events
+    busylightService.on('connected', () => {
+        if (settingsWin) settingsWin.webContents.send('busylight-status', true);
+    });
+    busylightService.on('disconnected', () => {
+        if (settingsWin) settingsWin.webContents.send('busylight-status', false);
+    });
+
     // Initial fetch
     updateWeather();
 
@@ -37,7 +45,7 @@ app.on('window-all-closed', (e) => e.preventDefault());
 // Using global 'lastWeather' defined at top of file
 
 async function updateWeather() {
-    console.log('Updating weather...');
+
     const config = configService.get();
 
     // Check for "falsy" pulse logic: if user unchecked it, we must ensure it's off.
@@ -198,6 +206,10 @@ ipcMain.handle('validate-location', async (event, location) => {
 
 ipcMain.handle('get-device-info', () => {
     return busylightService.getDeviceInfo();
+});
+
+ipcMain.handle('get-busylight-status', () => {
+    return busylightService.isConnected;
 });
 
 ipcMain.handle('detect-location', async () => {

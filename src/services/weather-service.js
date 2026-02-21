@@ -66,10 +66,8 @@ class WeatherService {
      */
     async detectLocation() {
         try {
-            console.log('Auto-detecting location via IP...');
             const resp = await axios.get('http://ip-api.com/json/?fields=status,country,city,lat,lon');
             if (resp.data && resp.data.status === 'success') {
-                console.log('Detected:', resp.data.city, resp.data.country);
                 return { lat: resp.data.lat, lon: resp.data.lon, city: resp.data.city, country: resp.data.country };
             }
         } catch (e) {
@@ -260,7 +258,8 @@ class WeatherService {
      */
     async fetchOpenMeteo(lat, lon, locationName, config) {
         try {
-            const days = (config.precipHorizon === 'day' || config.tempHorizon === 'day_high') ? 2 : 1;
+            // Always request 2 days to ensure we have a full 24h buffer for diagnostics/debug
+            const days = 2;
             const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,precipitation_probability,rain,showers,snowfall&daily=sunrise,sunset&timezone=auto&forecast_days=${days}`;
             const resp = await axios.get(url, { timeout: 10000 });
             const data = resp.data;

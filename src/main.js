@@ -31,11 +31,65 @@ app.whenReady().then(() => {
     });
 
     // Initial fetch
-    updateWeather();
+    updateWeather().catch(e => console.error(e));
+
+    // Check for startup path mismatch (Portable/Moved Exe)
+    checkAndFixStartupItem();
 
     // Schedule periodic updates (15 mins)
     weatherInterval = setInterval(updateWeather, 15 * 60 * 1000);
 });
+
+// Explicitly set AppUserModelId for Windows notifications/taskbar
+app.setAppUserModelId('com.weatherlight.app');
+
+function getExecutablePath() {
+    // If running as a portable app, this env var points to the actual .exe file
+    // otherwise it falls back to the current executable (installed or dev electron.exe)
+    return process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+}
+
+function checkAndFixStartupItem() {
+    if (!app.isPackaged) return; // Skip in dev
+
+    const currentPath = getExecutablePath();
+    const exeName = path.basename(currentPath, '.exe');
+
+    // Check specifically for our valid key
+    const settings = app.getLoginItemSettings({ path: currentPath, name: 'WeatherLight' });
+
+    // CLEANUP: Attempt to remove legacy/incorrect named item "Busylight Weather App"
+    // We do this blindly to ensure no duplicates exist from previous versions
+    app.setLoginItemSettings({
+        openAtLogin: false,
+        path: currentPath,
+        args: [],
+        name: 'Busylight Weather App'
+    });
+
+    // CLEANUP: Attempt to remove filename-based key (e.g. "WeatherLight-0.9.3") if it differs
+    if (exeName !== 'WeatherLight') {
+        app.setLoginItemSettings({
+            openAtLogin: false,
+            path: currentPath,
+            args: [],
+            name: exeName
+        });
+    }
+
+    if (settings.openAtLogin) {
+        // If the registered path doesn't match where we are running from now, update it.
+        // options.path in getLoginItemSettings might be undefined on some platforms/versions, 
+        // strictly we just re-register to be safe if it's supposed to be on.
+        // However, to avoid spamming registry writes, we can just blindly update it once on launch.
+        app.setLoginItemSettings({
+            openAtLogin: true,
+            path: currentPath,
+            args: [], // Portable apps might need specific args? Usually just the exe is enough.
+            name: 'WeatherLight' // Explicitly set name to avoid ambiguity
+        });
+    }
+}
 
 app.on('window-all-closed', (e) => e.preventDefault());
 
@@ -48,53 +102,44 @@ async function updateWeather() {
 
     const config = configService.get();
 
-    // Check for "falsy" pulse logic: if user unchecked it, we must ensure it's off.
-    // However, busylightService logic handles this based on config passed to it? 
-    // No, updateWeather calls busylightService.animate(weather). 
-    // We should pass config to animate or let busylight service check config?
-    // Current design: busylightService.animate takes (weather, settings).
-
     // Validation:
-    // 1. Location is always required.
-    // 2. API Key is only required if provider is OpenWeatherMap.
     if ((!config.location && !config.autoLocation) || (config.provider === 'openweathermap' && !config.apiKey)) {
         setTrayTooltip('Setup required');
         return;
     }
 
-    const weather = await weatherService.fetch(config);
+    try {
+        const weather = await weatherService.fetch(config);
 
-    if (weather && !weather.error) {
-        lastWeather = weather; // Store for IPC
-        console.log(`Weather: ${weather.temperature}°C (${weather.locationName}), NightMode: ${weather.isNight}`);
+        if (weather && !weather.error) {
+            lastWeather = weather; // Store for IPC
 
-        // Update Tray Icon based on night mode
-        // If night mode is active, we might want a different icon or just let the color indicate
-        // Current requirement: "Update default Tray/Window icon". 
-        // We implemented dynamic icon coloring in icon_generator.
-        // Determine Night Mode based on Config + Weather State
-        const isNightMode = config.sunsetSunrise && weather.isNight;
+            // Check Night Mode
+            const isNightMode = config.sunsetSunrise && weather.isNight;
 
-        const displayTemp = config.unit === 'F' ? Math.round((weather.temperature * 9 / 5) + 32) : weather.temperature;
-        const unitLabel = config.unit === 'F' ? '°F' : '°C';
+            const displayTemp = config.unit === 'F' ? Math.round((weather.temperature * 9 / 5) + 32) : weather.temperature;
+            const unitLabel = config.unit === 'F' ? '°F' : '°C';
 
-        let currentTooltip = `${weather.locationName} — ${displayTemp}${unitLabel}`;
-        if (weather.hasPrecipitation) {
-            currentTooltip += ' (Precipitation)';
+            let currentTooltip = `${weather.locationName} — ${displayTemp}${unitLabel}`;
+            if (weather.hasPrecipitation) {
+                currentTooltip += ' (Precipitation)';
+            }
+            if (isNightMode) {
+                currentTooltip += ' (Night Mode)';
+            }
+            setTrayTooltip(currentTooltip);
+
+            const color = busylightService.update(weather, config);
+
+            // Update Tray Icon with Night Mode flag
+            if (iconWin) iconWin.webContents.send('set-icon-color', color, isNightMode);
+        } else {
+            setTrayTooltip('Error fetching weather');
+            busylightService.off();
         }
-        if (isNightMode) {
-            currentTooltip += ' (Night Mode)';
-        }
-        setTrayTooltip(currentTooltip);
-
-        const color = busylightService.update(weather, config);
-
-        // Update Tray Icon with Night Mode flag
-        if (iconWin) iconWin.webContents.send('set-icon-color', color, isNightMode);
-    } else {
-        console.error('Weather update failed:', weather?.error);
+    } catch (e) {
+        console.error('Weather fetch exception:', e);
         setTrayTooltip('Error fetching weather');
-        busylightService.off();
     }
 }
 
@@ -113,13 +158,17 @@ function createTray() {
         {
             label: 'Start with Windows',
             type: 'checkbox',
-            checked: app.getLoginItemSettings().openAtLogin,
+            checked: app.getLoginItemSettings({ path: getExecutablePath() }).openAtLogin,
             click: (item) => {
-                if (item.checked) {
-                    app.setLoginItemSettings({ openAtLogin: true });
-                } else {
-                    app.setLoginItemSettings({ openAtLogin: false });
-                }
+                const exePath = getExecutablePath();
+                const isEnabled = item.checked;
+
+                app.setLoginItemSettings({
+                    openAtLogin: isEnabled,
+                    path: exePath,
+                    args: [],
+                    name: 'WeatherLight' // Explicitly set name to avoid ambiguity
+                });
             }
         },
         { type: 'separator' },

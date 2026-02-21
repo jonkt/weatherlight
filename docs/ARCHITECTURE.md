@@ -57,12 +57,15 @@ The central coordinator.
 - **Lifecycle**: handles `app.on('ready')`, tray creation, and window management.
 - **Loop**: Sets up the 15-minute weather fetch interval.
 - **Coordination**: Fetches weather from `WeatherService`, passes it to `BusylightService`, and updates the Tray tooltip/icon.
-- **IPC Handlers**:
     - `get-settings` / `set-settings`: Config management.
     - `get-weather-state`: Returns last fetched weather.
-    - `detect-location`: **(New)** Triggers immediate IP-based location detection.
+    - `detect-location`: Triggers immediate IP-based location detection.
     - `validate-location`: Checks if a city/country string is valid.
     - `get-device-info` / `set-manual-mode` / `apply-manual-state`: Diagnostics.
+- **Startup Logic**:
+    - Uses `checkAndFixStartupItem()` to manage "Start with Windows".
+    - Enforces a consistent registry key name (`WeatherLight`) to avoid duplicates from versioned filenames.
+    - Path-aware: actively updates the startup path if the portable executable is moved.
 
 ### 2. Services (`src/services/`)
 - **`config-service.js`**: Manages `config.json`. Stores API keys, location, units (C/F), and preferences.
@@ -70,6 +73,7 @@ The central coordinator.
     - Abstracts provider differences (Open-Meteo vs. OpenWeatherMap).
     - Handles **Auto-Location** via IP-API.
     - **Forecast Horizons**: implementing logic to look ahead (Immediate, Short Term, Rest of Today, 24h) for both temperature highs and precipitation pulse.
+    - **Diagnostics Buffer**: Always requests 48h of data from Open-Meteo to ensure the Diagnostics view has a full 24h future buffer, regardless of the active horizon setting.
     - Centralizes logic: Calculates `isNight` state based on sunrise/sunset.
     - Returns a unified `WeatherState` object.
 - **`busylight-service.js`**:

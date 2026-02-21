@@ -53,6 +53,22 @@ The main process (`src/main.js`) handles the application lifecycle, tray icon, w
 
 *   **Set Location & API Key:** Right-click the tray icon and select "Settings". Enter your location (e.g., "London, UK") and your OpenWeatherMap API key.
 
+## Troubleshooting
+
+### "Windows cannot access the specified device, path, or file"
+If you see this error when trying to run the portable `.exe`, it is likely because Windows Security has blocked the file since it was downloaded from the internet.
+
+**To fix this:**
+1.  Right-click the `WeatherLight.exe` file.
+2.  Select **Properties**.
+3.  At the bottom of the **General** tab, look for a "Security" section.
+4.  Check the box **Unblock**.
+5.  Click **Apply** and **OK**.
+6.  Run the app again.
+
+### "Busylight not found"
+Ensure the device is plugged in before starting the application. If issues persist, check the "Diagnostics Mode" in Settings.
+
 ---
 
 _This project is for demonstration purposes and is not affiliated with Kuando or OpenWeatherMap._

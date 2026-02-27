@@ -396,9 +396,7 @@ const COLOR_SCALE: &[(f64, &str)] = &[
 ];
 
 fn calculate_weather_color(weather: &WeatherState, config: &AppConfig) -> String {
-    if weather.has_precipitation {
-        return "#0000FF".to_string(); // Blue for rain/snow
-    }
+
     
     // Convert current temperature to match gradient steps (gradient is in F in electron version originally but colorScale.js is in C)
     // Wait, colorScale.js says `{ temp: 0, color: '00033a' }, // 32°F`, meaning the primary `temp` lookup is in Celsius!

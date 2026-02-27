@@ -101,30 +101,35 @@ async function updateUIState() {
     }
 
     // Initialize ResizeObserver to handle dynamic content changes
-    const targetNode = document.documentElement;
-    if (targetNode) {
+    // We observe the container specifically to avoid feedback loops with the body/window height
+    const container = document.querySelector('.container');
+    if (container) {
         const resizeObserver = new ResizeObserver(entries => {
-            // Give the DOM a tiny bit of time to reflow
-            setTimeout(() => {
-                const height = document.documentElement.scrollHeight;
-                let targetHeight = height + window.outerHeight - window.innerHeight; // Add OS chrome delta if needed, or rely on Tauri
-
-                // Tauri webview inner height logic
-                let optimalHeight = height;
-                let maxHeight = Math.floor(window.screen.availHeight * 0.90);
-                if (optimalHeight > maxHeight) optimalHeight = maxHeight;
-
-                if (window.api && window.api.resizeSettings) {
-                    window.api.resizeSettings(optimalHeight);
+            for (let entry of entries) {
+                let height;
+                if (entry.borderBoxSize && entry.borderBoxSize.length > 0) {
+                    height = entry.borderBoxSize[0].blockSize;
+                } else {
+                    height = entry.contentRect.height;
                 }
-            }, 10);
+
+                if (typeof height === 'number' && isFinite(height)) {
+                    // Add body padding (20px top + 20px bottom) + small buffer (5px)
+                    // This fixed calculation prevents the "growing window" bug
+                    // Use Math.ceil to ensure we send an integer
+                    window.api.resizeSettings(Math.ceil(height + 45));
+                }
+            }
         });
-        resizeObserver.observe(targetNode);
+        resizeObserver.observe(container);
     }
 }
 
+
 function updateWindowSize() {
-    // Legacy bridge that triggered logic
+    // Fallback/Legacy: just triggers a check via observer indirectly or set timeout
+    // With observer on body, simple DOM changes should trigger it.
+    // We can leave this empty or force a check if needed.
 }
 
 // ... existing code ...
@@ -191,11 +196,12 @@ async function loadDiagnostics() {
             weatherDiv.textContent = 'Error fetching weather data.';
             console.error(e);
         }
-    }
 
-    // Resize after weather data (and table) loads
-    updateWindowSize();
+        // Resize after weather data (and table) loads
+        updateWindowSize();
+    }
 }
+
 function updateHardwareStatus(connected) {
     const statusDiv = document.getElementById('connection-status');
 
@@ -338,7 +344,6 @@ function attachListeners() {
             precipHorizon: precipHorizonSelect.value
         };
         window.api.saveSettings(settings);
-        window.api.closeSettings();
     });
 
     closeButton.addEventListener('click', () => {
@@ -351,10 +356,6 @@ function attachListeners() {
 async function startAsyncLogic() {
     const settings = await window.api.getSettings();
     const weather = await window.api.getWeatherState();
-
-    // Start background weather UI poller
-    updateSunTimes();
-    setInterval(updateSunTimes, 10000);
 
     // Set values
     providerSelect.value = settings.provider || 'open-meteo';
@@ -397,7 +398,19 @@ async function startAsyncLogic() {
 
     // ...
 
-    // The sunTimesDiv is now updated asynchronously via updateSunTimes()
+    // Display Sun Times
+    const sunTimesDiv = document.getElementById('sunTimes');
+    if (weather?.sunTimes) {
+        const fmt = (d) => {
+            if (!d) return '--:--';
+            return new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        };
+        const nextSunset = fmt(weather.sunTimes.sunset);
+        const nextSunrise = fmt(weather.sunTimes.sunrise);
+
+        // Use spans with block display or just text with gap
+        sunTimesDiv.innerHTML = `<span>Next sunset: <strong>${nextSunset}</strong></span><span>Next sunrise: <strong>${nextSunrise}</strong></span>`;
+    }
 
     // Help Bubble Logic
     const helpIcon = document.getElementById('apiKeyHelpIcon');
@@ -449,19 +462,19 @@ async function startAsyncLogic() {
     const diagClose = document.getElementById('diag-close');
 
     function toggleDiagnostics(show) {
+        mainSettings.style.display = show ? 'none' : 'block';
+        diagnosticsView.style.display = show ? 'block' : 'none';
+
         if (show) {
-            mainSettings.style.display = 'none';
-            diagnosticsView.style.display = 'block';
             loadDiagnostics();
             diagTemp.dispatchEvent(new Event('input'));
         } else {
-            diagnosticsView.style.display = 'none';
-            mainSettings.style.display = 'block';
             // Disable manual mode when closing
             diagManualMode.checked = false;
             updateManualModeUI();
             window.api.setManualMode(false);
         }
+        updateWindowSize();
     }
 
     async function loadDiagnostics() {
@@ -573,20 +586,4 @@ async function startAsyncLogic() {
     });
 
     diagPulse.addEventListener('change', updateManualState);
-}
-
-async function updateSunTimes() {
-    const weather = await window.api.getWeatherState();
-    const sunTimesDiv = document.getElementById('sunTimes');
-
-    if (weather && weather.sunTimes && weather.sunTimes.sunrise) {
-        const fmt = (d) => {
-            if (!d) return '--:--';
-            return new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-        };
-        const nextSunset = fmt(weather.sunTimes.sunset);
-        const nextSunrise = fmt(weather.sunTimes.sunrise);
-
-        sunTimesDiv.innerHTML = `<span>Next sunset: <strong>${nextSunset}</strong></span><span>Next sunrise: <strong>${nextSunrise}</strong></span>`;
-    }
 }

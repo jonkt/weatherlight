@@ -1,0 +1,78 @@
+{
+  "name": "WeatherLight",
+  "version": "1.0.0",
+  "description": "WeatherLight",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "set ELECTRON_DISABLE_SECURITY_WARNINGS=true && electron .",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "electron-builder"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "node-hid": "^3.2.0"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.weatherlight.app",
+    "productName": "WeatherLight",
+    "asar": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US"
+    ],
+    "afterPack": "./scripts/afterPack.js",
+    "files": [
+      "src/**/*",
+      "lib/**/*",
+      "package.json",
+      "node_modules/**/*.js",
+      "node_modules/**/*.json",
+      "node_modules/**/*.node",
+      "node_modules/**/*.mjs",
+      "!**/test/**",
+      "!**/tests/**",
+      "!**/*.md",
+      "!**/*.ts",
+      "!**/*.map",
+      "!**/*.d.ts",
+      "!**/.nycrc",
+      "!**/tsconfig.json",
+      "!**/.builds/**",
+      "!**/browser.mjs",
+      "!**/node_modules/**/LICENSE*",
+      "!**/node_modules/**/CHANGELOG*",
+      "!**/node_modules/**/HISTORY*",
+      "!**/node_modules/**/README*",
+      "!**/node_modules/node-hid/hidapi/**",
+      "!**/node_modules/node-hid/src/**",
+      "!**/node_modules/node-hid/build/Release/obj/**",
+      "!**/node_modules/node-hid/build/Release/*.lib",
+      "!**/node_modules/node-hid/build/Release/*.exp",
+      "!**/node_modules/node-hid/build/Release/*.iobj",
+      "!**/node_modules/node-hid/build/Release/*.ipdb",
+      "!**/node_modules/node-hid/build/*.vcxproj",
+      "!**/node_modules/node-hid/build/*.vcxproj.filters",
+      "!**/node_modules/node-hid/binding.gyp",
+      "!**/node_modules/node-addon-api/*.h",
+      "!**/node_modules/node-addon-api/*.gyp",
+      "!**/node_modules/node-addon-api/*.gypi",
+      "!**/node_modules/node-addon-api/*.c",
+      "!**/node_modules/node-addon-api/tools/**"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "src/sun_icon.png"
+    },
+    "portable": {
+      "artifactName": "WeatherLight.exe"
+    }
+  }
+}

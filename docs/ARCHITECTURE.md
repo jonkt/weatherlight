@@ -1,31 +1,29 @@
 # Architecture Documentation
 
 ## Overview
-**WeatherLight** is an Electron application that creates an ambient weather visualization using a **Kuando Busylight**. It runs in the system tray, fetching local weather data and translating it into meaningful light colors and animations (e.g., pulsing for rain).
+**WeatherLight** is a native ambient weather visualization tool that interfaces with a **Kuando Busylight**. Rewritten from Electron to **Tauri**, it significantly reduces memory footprint and bundle size (~67MB down to ~6MB) while retaining its exact frontend design. It runs natively in the system tray, fetching local weather data and translating it into light patterns and colors.
 
 ## System Design
 
-The application follows a **Modular Monolith** pattern within the Electron Main Process, separating concerns into distinct services while keeping the deployment simple.
+The application follows a **Shared State Concurrency** pattern built on top of Rust's `Arc<Mutex<T>>`.
 
 ```mermaid
 graph TD
-    User[User] -->|Interact| Tray[System Tray]
-    User -->|Configure| SettingsWin[Settings Window]
+    User[User] -->|Interact| Tray[Native System Tray]
+    User -->|Configure| SettingsWin[Settings Window UI]
     
-    subgraph "Main Process (src/main.js)"
-        AppLifecycle[App Lifecycle]
+    subgraph "Rust Backend (src-tauri)"
+        AppState[Tauri AppState Mutex]
         
-        subgraph "Services"
-            ConfigService[Config Service]
-            WeatherService[Weather Service]
-            BusylightService[Busylight Service]
+        subgraph "Modules"
+            Config[config.rs]
+            Weather[weather.rs]
+            Busylight[busylight.rs]
+            TrayModule[tray.rs]
         end
         
-        IPC[IPC Handlers]
-    end
-    
-    subgraph "Hidden Renderer"
-        IconGen[Icon Generator]
+        Tokio[Tokio Background Loop]
+        IPC[Tauri Command Handlers]
     end
 
     subgraph "External"
@@ -34,93 +32,69 @@ graph TD
         HW_Busy[Kuando Busylight HID]
     end
 
-    Tray --> AppLifecycle
-    SettingsWin <-->|IPC| IPC
-    IPC --> ConfigService
-    IPC --> BusylightService
-    AppLifecycle --> WeatherService
+    SettingsWin <-->|api.js / invoke| IPC
+    IPC --> AppState
+    IPC --> Config
+    IPC --> Busylight
     
-    WeatherService -->|HTTP| API_OM
-    WeatherService -->|HTTP| API_OWM
+    Tokio --> Weather
+    Weather -->|reqwest| API_OM
+    Weather -->|reqwest| API_OWM
     
-    BusylightService -->|node-hid| HW_Busy
-    BusylightService -->|Hex Color| AppLifecycle
+    Tokio --> AppState
+    Tokio --> TrayModule
+    TrayModule -->|image crate| Tray
     
-    AppLifecycle -->|Color & State| IconGen
-    IconGen -->|DataURL| Tray
+    Tokio --> Busylight
+    Busylight -->|hidapi| HW_Busy
 ```
 
 ## Key Components
 
-### 1. Main Entry (`src/main.js`)
-The central coordinator.
-- **Lifecycle**: handles `app.on('ready')`, tray creation, and window management.
-- **Loop**: Sets up the 15-minute weather fetch interval.
-- **Coordination**: Fetches weather from `WeatherService`, passes it to `BusylightService`, and updates the Tray tooltip/icon.
-    - `get-settings` / `set-settings`: Config management.
-    - `get-weather-state`: Returns last fetched weather.
-    - `detect-location`: Triggers immediate IP-based location detection.
-    - `validate-location`: Checks if a city/country string is valid.
-    - `get-device-info` / `set-manual-mode` / `apply-manual-state`: Diagnostics.
-- **Startup Logic**:
-    - Uses `checkAndFixStartupItem()` to manage "Start with Windows".
-    - Enforces a consistent registry key name (`WeatherLight`) to avoid duplicates from versioned filenames.
-    - Path-aware: actively updates the startup path if the portable executable is moved.
+### 1. `lib.rs` (The Orchestrator)
+The central initialization layer.
+- **Lifecycle**: Sets up the Tauri application builder, registers plugins (autostart, single-instance). Intercepts `RunEvent::ExitRequested` to keep the app alive silently in the background when windows are closed.
+- **Background Loop**: Spawns an async `Tokio` thread that executes immediately (`first_run` flag) and then queries the `weather_svc` every 15 minutes, pushing results into the `AppState`, the `Tray`, and the `Busylight` controller.
+- **State Management**: Hosts the `AppState` struct (Mutex-wrapped configuration, hardware controllers). Gracefully handles missing `hidapi` hardware without panicking.
+- **IPC Interface**: Exposes `#[tauri::command]` functions connected to the frontend (`get_settings`, `apply_manual_state`, `detect_location`, etc).
 
-### 2. Services (`src/services/`)
-- **`config-service.js`**: Manages `config.json`. Stores API keys, location, units (C/F), and preferences.
-- **`weather-service.js`**: 
-    - Abstracts provider differences (Open-Meteo vs. OpenWeatherMap).
-    - Handles **Auto-Location** via IP-API.
-    - **Forecast Horizons**: implementing logic to look ahead (Immediate, Short Term, Rest of Today, 24h) for both temperature highs and precipitation pulse.
-    - **Diagnostics Buffer**: Always requests 48h of data from Open-Meteo to ensure the Diagnostics view has a full 24h future buffer, regardless of the active horizon setting.
-    - Centralizes logic: Calculates `isNight` state based on sunrise/sunset.
-    - Returns a unified `WeatherState` object.
-- **`busylight-service.js`**:
-    - Wraps `node-hid` interactions via `lib/`.
-    - Maps Temperature -> Color (using `src/color-scale.js`).
-    - Handles **Pulse Animations** (Gamma bypass for smoothness).
-    - Manages **Diagnostics Mode** (manual override).
+### 2. `busylight.rs` (Hardware Abstraction)
+- Wraps the `hidapi` crate to execute low-level byte array transmissions to the USB interface.
+- Includes a dedicated pulsing thread tracking a shared `PulseState` inside an `Arc<Mutex>`, avoiding blocking the main event loops during soft continuous lighting animations.
 
-### 3. UI Windows (`src/settings.html`, `src/icon_generator.html`)
-- **Settings Window**: 
-    - Dynamic height resizing based on selected provider.
-    - **Diagnostics Mode**: A hidden view for testing hardware LEDs and animations.
-    - **Context Isolation**: Uses `preload.js` to securely expose Main Process API (`window.api`).
-- **Icon Generator**:
-    - A hidden, non-visible window.
-    - Uses HTML5 Canvas to draw the dynamic tray icon.
-    - Features: Rounded corners, Night mode "stars" overlay.
+### 3. `weather.rs` (Network Logic)
+- Built around the `reqwest` crate pointing to Open-Meteo or OpenWeatherMap endpoints.
+- Calculates sunrise/sunset locally using geometry, establishing the `isNight` flag.
+- Normalizes data into a generic `WeatherState` struct compatible with both APIs.
+
+### 4. `tray.rs` (Dynamic Icon & Autostart)
+- Since Tauri does not easily support headless WebViews for `<canvas>` generation, the dynamic tray icon is algorithmically drawn using the Rust `image` crate.
+- `update_tray_icon`: Manipulates RGBA buffers to draw solid or night-dimmed circular vectors based directly on the provided weather Hex color.
+- **Menu Behavior**: Controls the OS Autostart registry. Modifying the Autostart checkbox clones the active state, updates `$APPDATA/config.json`, and updates the registry simultaneously to prevent desynchronization upon reboot. To explicitly kill the application, the Tray `Quit` button invokes a hard `std::process::exit(0)` bypass route.
+
+### 5. `config.rs`
+- Strict typing of the application settings using `serde`.
+- Reads and writes to the system's AppData (`$APPDATA/WeatherLight/config.json`).
+- Handles alias mapping for JavaScript configuration variables (e.g., `#[serde(rename = "autoLocation")]`).
 
 ## Data Flow
 
-1.  **Initialization**: App loads config, connects to Busylight.
-2.  **Weather Fetch**: 
-    - `WeatherService` gets location (Auto or Config).
-    - Fetches data from Provider.
-    - Calculates `isNight`.
+1.  **Initialization**: Tauri `setup()` hook runs, loading settings and seeding the `AppState`.
+2.  **Weather Fetch Interval**: The `Tokio` loop ticks every 15 minutes.
+    - Determines which API provider to hit (Open-Meteo / OWM).
+    - Dispatches async GET request.
 3.  **Update Cycle**:
-    - `Main` receives weather data.
-    - **Tray**: Tooltip updated (Unit-aware: C/F).
-    - **Hardware**: `BusylightService` determines color/pulse.
-        - If `isNight` & `SunsetMode=True`: Turn off.
-        - Else: Apply color/pulse.
-    - **Icon**: Color sent to `IconGen` -> rendered -> sent back to `Main` -> set as Tray Icon.
-4. **Auto-Detect Preview**:
-    - User checks "Auto-detect" in Settings.
-    - Renderer calls `detect-location`.
-    - Service queries IP-API.
-    - Result (City, Country) is returned and displayed immediately in the input field.
+    - Generates string tooltip based on current temperature bounds and units (`C / F`).
+    - Pushes tooltip to `tray.rs`.
+    - Generates color hex map (`#FF0000`, etc). Draws the tray image byte vector and flushes it to the OS.
+    - Triggers the `BusylightController` (unless diagnostic manual mode is enabled).
+4. **Auto-Detect Process**:
+    - Clicking the detect location link invokes `detect_location`.
+    - Backend queries `http://ip-api.com/json` and returns the structured `LocationDetectResult` straight into the UI bindings.
 
-## Refactoring Notes / Code Standards
+## Build Pipeline
 
--   **Context Isolation**: All renderers must use `contextIsolation: true`. No direct Node.js access in UI.
--   **Service Pattern**: Logic resides in `src/services/`, not `main.js` or UI files.
--   **Async/Await**: Used consistently for all I/O.
--   **Error Handling**: Services must not crash the app; they log errors and return safe fallbacks (e.g., white light, error tooltip).
-
-## Debugging
-
--   **Logs**: `console.log` in Main Process outputs to terminal.
--   **Diagnostics**: Use the in-app "Diagnostics Mode" to isolate hardware issues vs. weather data issues.
--   **Config**: Located at `%APPDATA%\WeatherLight\config.json`.
+The shift to Tauri leverages Rust's native compilation target:
+- **Command**: `npm run tauri build` or `cargo tauri build`.
+- Generates a standalone MSI or NSIS `.exe` installer.
+- Release target includes aggressive size optimization options in `Cargo.toml`. Instead of packaging an entire Chromium instance, it relies on the host OS Webview system (WebView2 on Windows). Size is heavily reduced from \~67MB to just **~6MB**.

@@ -3,8 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>WeatherLight</title>
-    <link rel="icon" type="image/png" href="favicon.png">
+    <title>WeatherLight Settings</title>
     <style>
         :root {
             --bg-color: #f4f6f9;
@@ -306,51 +305,53 @@
             </div>
 
             <!-- Forecast Preferences -->
-            <h2>Forecast Preferences</h2>
-            <div style="display: flex; gap: 20px; margin-bottom: 20px;">
-                <div style="flex: 1; min-width: 0; padding: 4px;">
-                    <label for="tempHorizon">High Temperature to Display</label>
-                    <div class="select-wrapper">
-                        <select id="tempHorizon">
-                            <option value="current">Immediate (Next 1-3 Hours)</option>
-                            <option value="short_high">Short Term (Next 6 Hours)</option>
-                            <option value="today_high">Rest of Today</option>
-                            <option value="day_high">Next 24 Hours</option>
-                        </select>
+            <div>
+                <h2>Forecast Preferences</h2>
+                <div style="display: flex; gap: 20px; margin-bottom: 20px;">
+                    <div style="flex: 1; min-width: 0; padding: 4px;">
+                        <label for="tempHorizon">High Temperature to Display</label>
+                        <div class="select-wrapper">
+                            <select id="tempHorizon">
+                                <option value="current">Immediate (Next 1-3 Hours)</option>
+                                <option value="short_high">Short Term (Next 6 Hours)</option>
+                                <option value="today_high">Rest of Today</option>
+                                <option value="day_high">Next 24 Hours</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="flex: 1; min-width: 0; padding: 4px;">
+                        <label for="precipHorizon">Pulse for Rain/Snow</label>
+                        <div class="select-wrapper">
+                            <select id="precipHorizon">
+                                <option value="none">None (No Pulse)</option>
+                                <option value="immediate">Immediate (Next 1-3 Hours)</option>
+                                <option value="short">Short Term (Next 6 Hours)</option>
+                                <option value="today">Rest of Today</option>
+                                <option value="day">Next 24 Hours</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
-                <div style="flex: 1; min-width: 0; padding: 4px;">
-                    <label for="precipHorizon">Pulse for Rain/Snow</label>
-                    <div class="select-wrapper">
-                        <select id="precipHorizon">
-                            <option value="none">None (No Pulse)</option>
-                            <option value="immediate">Immediate (Next 1-3 Hours)</option>
-                            <option value="short">Short Term (Next 6 Hours)</option>
-                            <option value="today">Rest of Today</option>
-                            <option value="day">Next 24 Hours</option>
-                        </select>
-                    </div>
+
+                <div class="setting" id="pulse-speed-container">
+                    <span class="range-value" id="pulseSpeedValue">2.0s</span>
+                    <label for="pulseSpeed">Pulse Speed</label>
+                    <input type="range" id="pulseSpeed" min="0.5" max="10" step="0.1" value="2.0">
                 </div>
-            </div>
 
-            <div class="setting" id="pulse-speed-container">
-                <span class="range-value" id="pulseSpeedValue">2.0s</span>
-                <label for="pulseSpeed">Pulse Speed</label>
-                <input type="range" id="pulseSpeed" min="0.5" max="10" step="0.1" value="2.0">
-            </div>
+                <div class="setting">
+                    <span class="range-value" id="maxBrightnessValue">70%</span>
+                    <label for="maxBrightness">Max Brightness</label>
+                    <input type="range" id="maxBrightness" min="10" max="100" step="1" value="70">
+                </div>
 
-            <div class="setting">
-                <span class="range-value" id="maxBrightnessValue">70%</span>
-                <label for="maxBrightness">Max Brightness</label>
-                <input type="range" id="maxBrightness" min="10" max="100" step="1" value="70">
-            </div>
-
-            <div class="setting checkbox-container">
-                <input type="checkbox" id="sunsetSunrise">
-                <label for="sunsetSunrise">Turn off light between sunset and sunrise</label>
-            </div>
-            <div id="sunTimes"
-                style="margin-left: 28px; font-size: 0.85rem; color: #666; margin-top: -15px; margin-bottom: 20px; display: flex; gap: 20px;">
+                <div class="setting checkbox-container">
+                    <input type="checkbox" id="sunsetSunrise">
+                    <label for="sunsetSunrise">Turn off light between sunset and sunrise</label>
+                </div>
+                <div id="sunTimes"
+                    style="margin-left: 28px; font-size: 0.85rem; color: #666; margin-top: -15px; margin-bottom: 20px; display: flex; gap: 20px;">
+                </div>
             </div>
 
             <div class="buttons">
@@ -434,7 +435,6 @@
             </div>
         </div>
     </div>
-    <script src="api.js"></script>
     <script src="settings.js"></script>
 </body>
 

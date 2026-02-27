@@ -1,34 +1,12 @@
 {
-  "name": "WeatherLight",
-  "version": "1.0.0",
-  "description": "WeatherLight",
-  "main": "src/main.js",
+  "name": "default",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
   "scripts": {
-    "start": "set ELECTRON_DISABLE_SECURITY_WARNINGS=true && electron .",
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "electron-builder"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "dependencies": {
-    "axios": "^1.11.0",
-    "node-hid": "^3.2.0"
+    "tauri": "tauri"
   },
   "devDependencies": {
-    "electron": "^37.2.6",
-    "electron-builder": "^24.13.3"
-  },
-  "build": {
-    "appId": "com.weatherlight.app",
-    "productName": "WeatherLight",
-    "win": {
-      "target": "portable",
-      "icon": "src/sun_icon.png"
-    },
-    "portable": {
-      "artifactName": "WeatherLight.exe"
-    }
+    "@tauri-apps/cli": "^2"
   }
 }

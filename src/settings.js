@@ -404,6 +404,7 @@ async function startAsyncLogic() {
     const helpBox = document.getElementById('apiKeyHelp');
     const owmLink = document.getElementById('owmLink');
     const openMeteoLink = document.getElementById('openMeteoLink');
+    const busylightLink = document.getElementById('busylightLink');
 
     helpIcon.addEventListener('click', (e) => {
         e.preventDefault();
@@ -420,6 +421,13 @@ async function startAsyncLogic() {
         openMeteoLink.addEventListener('click', (e) => {
             e.preventDefault();
             window.api.openExternal('https://open-meteo.com/');
+        });
+    }
+
+    if (busylightLink) {
+        busylightLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.api.openExternal('https://busylight.com/');
         });
     }
 

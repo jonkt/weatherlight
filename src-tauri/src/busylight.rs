@@ -200,6 +200,7 @@ impl BusylightController {
         // Spawn pulse worker thread
         let pulse_ctrl = Arc::clone(&controller);
         thread::spawn(move || {
+            let mut idle_ticks = 0;
             loop {
                 // Read state
                 let state = {
@@ -208,6 +209,7 @@ impl BusylightController {
                 };
 
                 if state.active {
+                    idle_ticks = 0;
                     // Send High
                     if let Ok(mut bl) = pulse_ctrl.bl.lock() {
                         bl.light(state.color_high.0, state.color_high.1, state.color_high.2);
@@ -224,6 +226,13 @@ impl BusylightController {
                     }
                     thread::sleep(Duration::from_millis(state.speed_ms / 2));
                 } else {
+                    idle_ticks += 1;
+                    if idle_ticks >= 50 { // ~5 seconds at 100ms intervals
+                        idle_ticks = 0;
+                        if let Ok(mut bl) = pulse_ctrl.bl.lock() {
+                            bl.send(); // Keep-alive to prevent hardware watchdog timeout
+                        }
+                    }
                     thread::sleep(Duration::from_millis(100)); // Idle
                 }
             }

@@ -20,6 +20,7 @@ pub struct Busylight {
     is_new_protocol: bool,
     buffer: [u8; 65], // Maximum buffer size we might need
     api: Option<HidApi>,
+    last_reconnect: std::time::Instant,
 }
 
 impl Busylight {
@@ -31,6 +32,7 @@ impl Busylight {
             is_new_protocol: false,
             buffer: [0; 65],
             api,
+            last_reconnect: std::time::Instant::now(),
         };
         
         // Initialize basic buffer
@@ -132,33 +134,54 @@ impl Busylight {
         
         self.send();
     }
-    
-    // Internal light without degamma for smooth pulsing
-    fn light_raw(&mut self, r: u8, g: u8, b: u8) {
-        self.buffer[3] = r;
-        self.buffer[4] = g;
-        self.buffer[5] = b;
-        self.send();
+
+    fn tween_rgb(start: (u8, u8, u8), end: (u8, u8, u8), value: f32) -> (u8, u8, u8) {
+        (
+            (start.0 as f32 + (end.0 as f32 - start.0 as f32) * value) as u8,
+            (start.1 as f32 + (end.1 as f32 - start.1 as f32) * value) as u8,
+            (start.2 as f32 + (end.2 as f32 - start.2 as f32) * value) as u8,
+        )
     }
 
     fn send(&mut self) {
+        let mut should_reconnect = false;
+        
         if let Some(dev) = &self.device {
             let mut send_buf = self.buffer;
             
-            if self.is_new_protocol {
+            let result = if self.is_new_protocol {
                 // Calculate Checksum for new protocol (bytes 0..62)
                 // Note: node-hid writes index 0 as report ID on Windows implicitly
                 // On Windows hidapi, we need to send 65 bytes including native report ID 0
                 let sum: u32 = send_buf[0..63].iter().map(|&b| b as u32).sum();
                 send_buf[63] = ((sum >> 8) & 0xff) as u8;
                 send_buf[64] = (sum % 256) as u8;
-                
-                if let Err(e) = dev.write(&send_buf[..65]) {
-                    println!("Busylight write error (65 bytes): {}", e);
-                }
+                dev.write(&send_buf[..65])
             } else {
-                if let Err(e) = dev.write(&send_buf[..9]) {
-                    println!("Busylight write error (9 bytes): {}", e);
+                dev.write(&send_buf[..9])
+            };
+
+            if let Err(e) = result {
+                println!("Busylight write error. Connection likely stale: {}", e);
+                should_reconnect = true;
+            }
+        }
+
+        if should_reconnect && self.last_reconnect.elapsed() > std::time::Duration::from_secs(2) {
+            self.last_reconnect = std::time::Instant::now();
+            self.device = None;
+            // Attempt to reconnect once. If it succeeds, resend the buffer.
+            if self.connect().is_ok() {
+                if let Some(dev) = &self.device {
+                     let mut send_buf = self.buffer;
+                     if self.is_new_protocol {
+                        let sum: u32 = send_buf[0..63].iter().map(|&b| b as u32).sum();
+                        send_buf[63] = ((sum >> 8) & 0xff) as u8;
+                        send_buf[64] = (sum % 256) as u8;
+                        let _ = dev.write(&send_buf[..65]);
+                    } else {
+                        let _ = dev.write(&send_buf[..9]);
+                    }
                 }
             }
         }
@@ -201,6 +224,9 @@ impl BusylightController {
         let pulse_ctrl = Arc::clone(&controller);
         thread::spawn(move || {
             let mut idle_ticks = 0;
+            let refresh_rate_ms = 30; // 30ms per animation step
+            let mut pulse_index = 0;
+
             loop {
                 // Read state
                 let state = {
@@ -210,24 +236,40 @@ impl BusylightController {
 
                 if state.active {
                     idle_ticks = 0;
-                    // Send High
-                    if let Ok(mut bl) = pulse_ctrl.bl.lock() {
-                        bl.light(state.color_high.0, state.color_high.1, state.color_high.2);
+                    
+                    let half_cycle_ticks = (state.speed_ms / 2) / refresh_rate_ms;
+                    if half_cycle_ticks == 0 {
+                        // Fallback if speed is too fast (prevent div by zero)
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
-                    thread::sleep(Duration::from_millis(state.speed_ms / 2));
 
-                    // Check state again before low
-                    let active = { pulse_ctrl.pulse_state.lock().unwrap().active };
-                    if !active { continue; }
+                    // Calculate value between 0.0 and 1.0
+                    let (start_color, end_color, value) = if pulse_index < half_cycle_ticks {
+                        // High to Low
+                        (state.color_high, state.color_low, pulse_index as f32 / half_cycle_ticks as f32)
+                    } else {
+                        // Low to High
+                        (state.color_low, state.color_high, (pulse_index - half_cycle_ticks) as f32 / half_cycle_ticks as f32)
+                    };
 
-                    // Send Low
+                    let frame_color = Busylight::tween_rgb(start_color, end_color, value);
+
                     if let Ok(mut bl) = pulse_ctrl.bl.lock() {
-                        bl.light(state.color_low.0, state.color_low.1, state.color_low.2);
+                        bl.light(frame_color.0, frame_color.1, frame_color.2);
                     }
-                    thread::sleep(Duration::from_millis(state.speed_ms / 2));
+
+                    pulse_index += 1;
+                    if pulse_index >= half_cycle_ticks * 2 {
+                        pulse_index = 0;
+                    }
+
+                    thread::sleep(Duration::from_millis(refresh_rate_ms));
+
                 } else {
+                    pulse_index = 0;
                     idle_ticks += 1;
-                    if idle_ticks >= 50 { // ~5 seconds at 100ms intervals
+                    if idle_ticks >= 20 { // 2 seconds at 100ms intervals
                         idle_ticks = 0;
                         if let Ok(mut bl) = pulse_ctrl.bl.lock() {
                             bl.send(); // Keep-alive to prevent hardware watchdog timeout

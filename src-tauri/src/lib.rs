@@ -160,7 +160,7 @@ async fn apply_manual_state(state_payload: ManualState, state: State<'_, AppStat
                 if let Ok(mut p) = state.busylight.pulse_state.lock() {
                     p.active = true;
                     p.color_high = apply_brightness(rgba, state_payload.max_brightness);
-                    p.color_low = (0, 0, 0);
+                    p.color_low = apply_brightness(rgba, state_payload.max_brightness / 2);
                     p.speed_ms = state_payload.pulse_speed;
                 }
             } else {
@@ -341,7 +341,7 @@ async fn update_weather_pipeline(app: &AppHandle) {
                         if let Ok(mut p) = state.busylight.pulse_state.lock() {
                             p.active = true;
                             p.color_high = apply_brightness(rgba, config.max_brightness);
-                            p.color_low = (0, 0, 0); // Or dim
+                            p.color_low = apply_brightness(rgba, config.max_brightness / 2);
                             p.speed_ms = config.pulse_speed;
                         }
                     } else {

@@ -274,7 +274,7 @@ impl WeatherService {
                 let rain = item.get("rain").and_then(|v| v.get("3h")).and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let snow = item.get("snow").and_then(|v| v.get("3h")).and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let pop = item.get("pop").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                if pop > 0.15 || rain > 0.1 || snow > 0.1 {
+                if pop >= 0.35 || rain >= 0.5 || snow >= 0.5 {
                     has_precipitation = true;
                     break;
                 }
@@ -349,7 +349,8 @@ impl WeatherService {
             .and_then(|times| times.iter().position(|t| t.as_str() == Some(&current_hour_str)))
             .unwrap_or(0); // Fallback to 0 if missing
 
-        let hours_left = 24 - now_utc.time().format("%H").to_string().parse::<usize>().unwrap_or(0);
+        let now_local = Local::now();
+        let hours_left = 24 - now_local.time().format("%H").to_string().parse::<usize>().unwrap_or(0);
 
         let precip_hours = match config.precip_horizon.as_str() {
             "none" => 0,
@@ -396,7 +397,7 @@ impl WeatherService {
                     let show_val = showers.and_then(|arr| arr.get(i)).and_then(|v| v.as_f64()).unwrap_or(0.0);
                     let snow_val = snow.and_then(|arr| arr.get(i)).and_then(|v| v.as_f64()).unwrap_or(0.0);
 
-                    if prob_val > 15.0 || rain_val > 0.1 || show_val > 0.1 || snow_val > 0.1 {
+                    if prob_val >= 35.0 || rain_val >= 0.5 || show_val >= 0.5 || snow_val >= 0.5 {
                         has_precipitation = true;
                         break;
                     }

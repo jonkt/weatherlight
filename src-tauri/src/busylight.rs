@@ -134,6 +134,26 @@ impl Busylight {
         
         self.send();
     }
+    
+    // Internal light without degamma for explicitly linearly-scaled colors
+    fn light_raw(&mut self, r: u8, g: u8, b: u8) {
+        self.buffer[3] = r;
+        self.buffer[4] = g;
+        self.buffer[5] = b;
+        self.send();
+    }
+
+    pub fn light_pct(&mut self, r: u8, g: u8, b: u8, pct: u8) {
+        let pct_perceived = (pct as f32 / 100.0).clamp(0.0, 1.0);
+        // Convert perceived brightness slider to linear hardware power multiplier (Gamma 2.8)
+        let power_factor = pct_perceived.powf(2.8);
+        
+        self.buffer[3] = (r as f32 * power_factor) as u8;
+        self.buffer[4] = (g as f32 * power_factor) as u8;
+        self.buffer[5] = (b as f32 * power_factor) as u8;
+        
+        self.send();
+    }
 
     fn tween_rgb(start: (u8, u8, u8), end: (u8, u8, u8), value: f32) -> (u8, u8, u8) {
         (
@@ -199,8 +219,9 @@ pub struct BusylightController {
 #[derive(Clone, PartialEq)]
 pub struct PulseState {
     pub active: bool,
-    pub color_high: (u8, u8, u8),
-    pub color_low: (u8, u8, u8),
+    pub color_srgb: (u8, u8, u8),
+    pub pct_high: u8,
+    pub pct_low: u8,
     pub speed_ms: u64,
 }
 
@@ -214,8 +235,9 @@ impl BusylightController {
             manual_mode: Mutex::new(false),
             pulse_state: Arc::new(Mutex::new(PulseState {
                 active: false,
-                color_high: (0,0,0),
-                color_low: (0,0,0),
+                color_srgb: (0,0,0),
+                pct_high: 100,
+                pct_low: 50,
                 speed_ms: 1000
             })),
         });
@@ -224,8 +246,9 @@ impl BusylightController {
         let pulse_ctrl = Arc::clone(&controller);
         thread::spawn(move || {
             let mut idle_ticks = 0;
-            let refresh_rate_ms = 30; // 30ms per animation step
-            let mut pulse_index = 0;
+            let refresh_rate_ms = 33; // ~30FPS timing
+            let mut cycle_start_time = std::time::Instant::now();
+            let mut was_active = false;
 
             loop {
                 // Read state
@@ -235,39 +258,61 @@ impl BusylightController {
                 };
 
                 if state.active {
+                    if !was_active {
+                        cycle_start_time = std::time::Instant::now();
+                        was_active = true;
+                    }
                     idle_ticks = 0;
                     
-                    let half_cycle_ticks = (state.speed_ms / 2) / refresh_rate_ms;
-                    if half_cycle_ticks == 0 {
+                    if state.speed_ms == 0 {
                         // Fallback if speed is too fast (prevent div by zero)
                         thread::sleep(Duration::from_millis(100));
                         continue;
                     }
 
-                    // Calculate value between 0.0 and 1.0
-                    let (start_color, end_color, value) = if pulse_index < half_cycle_ticks {
-                        // High to Low
-                        (state.color_high, state.color_low, pulse_index as f32 / half_cycle_ticks as f32)
+                    let elapsed = cycle_start_time.elapsed().as_millis() as u64;
+                    let position = elapsed % state.speed_ms;
+                    let half_speed = state.speed_ms / 2;
+
+                    let mut linear_progress = if position < half_speed {
+                        // High to Low phase
+                        position as f32 / half_speed as f32
                     } else {
-                        // Low to High
-                        (state.color_low, state.color_high, (pulse_index - half_cycle_ticks) as f32 / half_cycle_ticks as f32)
+                        // Low to High phase
+                        (position - half_speed) as f32 / half_speed as f32
+                    };
+                    
+                    linear_progress = linear_progress.clamp(0.0, 1.0);
+
+                    // Sine easing mathematically stretches the top/bottom curves to hide PWM jumps 
+                    // and drastically reduces perceived hardware flashing at absolute turnaround points
+                    let easing = (std::f32::consts::PI * linear_progress - std::f32::consts::FRAC_PI_2).sin() * 0.5 + 0.5;
+
+                    let max_pct = state.pct_high as f32 / 100.0;
+                    let min_pct = state.pct_low as f32 / 100.0;
+
+                    let current_pct_perceived = if position < half_speed {
+                        max_pct - (max_pct - min_pct) * easing
+                    } else {
+                        min_pct + (max_pct - min_pct) * easing
                     };
 
-                    let frame_color = Busylight::tween_rgb(start_color, end_color, value);
+                    let power_factor = current_pct_perceived.powf(2.8);
+
+                    let frame_voltage = (
+                        (state.color_srgb.0 as f32 * power_factor) as u8,
+                        (state.color_srgb.1 as f32 * power_factor) as u8,
+                        (state.color_srgb.2 as f32 * power_factor) as u8
+                    );
 
                     if let Ok(mut bl) = pulse_ctrl.bl.lock() {
-                        bl.light(frame_color.0, frame_color.1, frame_color.2);
-                    }
-
-                    pulse_index += 1;
-                    if pulse_index >= half_cycle_ticks * 2 {
-                        pulse_index = 0;
+                        bl.light_raw(frame_voltage.0, frame_voltage.1, frame_voltage.2);
                     }
 
                     thread::sleep(Duration::from_millis(refresh_rate_ms));
 
                 } else {
-                    pulse_index = 0;
+                    was_active = false;
                     idle_ticks += 1;
                     if idle_ticks >= 20 { // 2 seconds at 100ms intervals
                         idle_ticks = 0;
@@ -290,12 +335,13 @@ impl BusylightController {
         }
     }
 
-    pub fn set_pulse(&self, r_high: u8, g_high: u8, b_high: u8, r_low: u8, g_low: u8, b_low: u8, speed_ms: u64) {
+    pub fn set_pulse(&self, r: u8, g: u8, b: u8, pct_high: u8, pct_low: u8, speed_ms: u64) {
         // Only start a new thread if state actually changed
         let new_state = PulseState {
             active: true,
-            color_high: (r_high, g_high, b_high),
-            color_low: (r_low, g_low, b_low),
+            color_srgb: (r, g, b),
+            pct_high,
+            pct_low,
             speed_ms,
         };
         

@@ -136,38 +136,34 @@ pub struct ManualState {
 async fn apply_manual_state(state_payload: ManualState, state: State<'_, AppState>) -> Result<(), String> {
     let is_manual = *state.busylight.manual_mode.lock().unwrap();
     if is_manual {
-        let hex_color = if state_payload.pulse {
-            "#0000FF".to_string()
-        } else {
-            let mock_weather = WeatherState {
-                temperature: state_payload.temp,
-                has_precipitation: false,
-                location_name: String::new(),
-                sun_times: crate::models::SunTimes { sunrise: None, sunset: None },
-                is_night: false,
-                provider: String::new(),
-                last_updated: chrono::Utc::now(),
-                debug_forecast: Vec::new()
-            };
-            // Note: Our manual config from UI doesn't have a unit toggle, but the
-            // slider assumes Celsius by default inside diag. Let's create a minimal config.
-            let mock_config = AppConfig { unit: "C".to_string(), ..Default::default() };
-            calculate_weather_color(&mock_weather, &mock_config)
+        let mock_weather = WeatherState {
+            temperature: state_payload.temp,
+            has_precipitation: state_payload.pulse,
+            location_name: String::new(),
+            sun_times: crate::models::SunTimes { sunrise: None, sunset: None },
+            is_night: false,
+            provider: String::new(),
+            last_updated: chrono::Utc::now(),
+            debug_forecast: Vec::new()
         };
+        // Note: Our manual config from UI doesn't have a unit toggle, but the
+        // slider assumes Celsius by default inside diag. Let's create a minimal config.
+        let mock_config = AppConfig { unit: "C".to_string(), ..Default::default() };
+        let hex_color = calculate_weather_color(&mock_weather, &mock_config);
 
         if let Some(rgba) = hex_to_rgb(&hex_color) {
             if state_payload.pulse {
                 if let Ok(mut p) = state.busylight.pulse_state.lock() {
                     p.active = true;
-                    p.color_high = apply_brightness(rgba, state_payload.max_brightness);
-                    p.color_low = apply_brightness(rgba, state_payload.max_brightness / 2);
+                    p.color_srgb = rgba;
+                    p.pct_high = state_payload.max_brightness;
+                    p.pct_low = state_payload.max_brightness / 2;
                     p.speed_ms = state_payload.pulse_speed;
                 }
             } else {
                 if let Ok(mut p) = state.busylight.pulse_state.lock() { p.active = false; }
                 if let Ok(mut bl) = state.busylight.bl.lock() {
-                    let c = apply_brightness(rgba, state_payload.max_brightness);
-                    bl.light(c.0, c.1, c.2);
+                    bl.light_pct(rgba.0, rgba.1, rgba.2, state_payload.max_brightness);
                 }
             }
         }
@@ -213,8 +209,9 @@ pub fn run() {
                     manual_mode: Mutex::new(false),
                     pulse_state: Arc::new(Mutex::new(crate::busylight::PulseState {
                         active: false,
-                        color_high: (0,0,0),
-                        color_low: (0,0,0),
+                        color_srgb: (0,0,0),
+                        pct_high: 100,
+                        pct_low: 50,
                         speed_ms: 1000,
                     })),
                 })
@@ -340,15 +337,15 @@ async fn update_weather_pipeline(app: &AppHandle) {
                     } else if weather.has_precipitation && config.pulse {
                         if let Ok(mut p) = state.busylight.pulse_state.lock() {
                             p.active = true;
-                            p.color_high = apply_brightness(rgba, config.max_brightness);
-                            p.color_low = apply_brightness(rgba, config.max_brightness / 2);
+                            p.color_srgb = rgba;
+                            p.pct_high = config.max_brightness;
+                            p.pct_low = config.max_brightness / 2;
                             p.speed_ms = config.pulse_speed;
                         }
                     } else {
                         if let Ok(mut p) = state.busylight.pulse_state.lock() { p.active = false; }
                         if let Ok(mut bl) = state.busylight.bl.lock() { 
-                            let c = apply_brightness(rgba, config.max_brightness);
-                            bl.light(c.0, c.1, c.2); 
+                            bl.light_pct(rgba.0, rgba.1, rgba.2, config.max_brightness);
                         }
                     }
                 }
@@ -438,11 +435,4 @@ fn hex_to_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     Some((r, g, b))
 }
 
-fn apply_brightness(color: (u8, u8, u8), pct: u8) -> (u8, u8, u8) {
-    let factor = (pct as f32 / 100.0).clamp(0.0, 1.0);
-    (
-        (color.0 as f32 * factor) as u8,
-        (color.1 as f32 * factor) as u8,
-        (color.2 as f32 * factor) as u8
-    )
-}
+

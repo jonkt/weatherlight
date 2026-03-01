@@ -554,8 +554,8 @@ async function startAsyncLogic() {
         window.api.applyManualState({
             temp: temp,
             pulse: pulse,
-            maxBrightness: 100, // Full brightness for testing
-            pulseSpeed: 1000 // Standard speed
+            maxBrightness: 100, // Full brightness to guarantee visibility during test
+            pulseSpeed: 1500    // Quick 1.5s pulse
         });
     }
 

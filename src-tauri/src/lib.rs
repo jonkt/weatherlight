@@ -374,7 +374,7 @@ async fn update_weather_pipeline(app: &AppHandle) {
     let config = state.config.lock().unwrap().clone();
 
     if (config.location.is_empty() && !config.auto_location)
-        || (config.provider == "openweathermap" && config.api_key.is_empty())
+        || (config.requires_api_key() && config.api_key.is_empty())
     {
         tray::update_tray_tooltip(app, "WeatherLight - Setup Required");
         emit_busylight_status(app, &state.busylight);
@@ -442,6 +442,7 @@ mod tests {
             provider: "Open-Meteo".to_string(),
             last_updated: Utc::now(),
             debug_forecast: Vec::new(),
+            provider_feeds: Vec::new(),
         }
     }
 

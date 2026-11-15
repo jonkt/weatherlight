@@ -60,12 +60,12 @@ graph TD
    - Shared single source of truth for both `BusylightController` lighting output and `tray.rs` icon rendering.
 
 3. **`models.rs` (Shared IPC DTOs)**
-   - Defines `SunTimes`, `WeatherState`, `ForecastItem`, `LocationDetectResult`, `LocationValidationResult`, `DeviceInfoResult`, and `ManualState`.
+   - Defines `SunTimes`, `WeatherState`, `ProviderFeedSnapshot`, `ForecastItem`, `LocationDetectResult`, `LocationValidationResult`, `DeviceInfoResult`, and `ManualState`.
    - Uses `#[serde(rename_all = "camelCase")]` on multi-word structs to align 1:1 with JavaScript property names.
 
 4. **`config.rs` (Persistent Configuration)**
    - Manages `AppConfig` serialized to `<DATA_DIR>/WeatherLight/config.json` (`%APPDATA%\WeatherLight\config.json` on Windows) with `#[serde(rename_all = "camelCase", default)]`.
-   - Provides `load_config`, `save_config`, `get_config_path`, and `AppConfig::format_temperature`.
+   - Provides `load_config`, `save_config`, `get_config_path`, `AppConfig::requires_api_key`, and `AppConfig::format_temperature`.
 
 5. **`busylight.rs` (USB HID Driver & Smooth Pulse Engine)**
    - Drives Plenom/Kuando Omega/Alpha devices (`VID 0x27bb`, 65-byte report with 16-bit big-endian checksum) and legacy Microchip UC devices (`VID 0x04d8`, 9-byte report) directly over `hidapi`.
@@ -74,8 +74,9 @@ graph TD
    - Applies a `1.5` perceptual brightness exponent (`BRIGHTNESS_GAMMA`) with rounded scaling (`scale_color_with_power`) and low-PWM beat-flicker stabilization (`stabilize_pulse_channel` + `MIN_ACTIVE_CHANNEL_FLOOR = 13.0` / `MIN_SMOOTH_PULSE_PWM = 13` capped at `MAX_FLOOR_POWER_RATIO = 0.55`): active channels whose peak reaches `>= 13` are floored at `13` (staying clear of the `1..=12` 30 FPS beat-flicker zone), while tiny trace channels (`peak < 13`, such as `G=1, B=1` at `40°C`) are suppressed to `0` so they never strobe at ~10 Hz.
    - Emits active pulse frames at a steady 33ms USB HID cadence without skipping repeated turnaround frames (preventing transient `+35%` PWM-reset brightness pops at cycle troughs), while idle solid states send a 20-second keep-alive packet (`KEEPALIVE_INTERVAL`) for the hardware watchdog.
 
-6. **`weather.rs` (Weather Providers, Geocoding & Horizons)**
-   - Wraps `reqwest::Client` (10-second timeout) for IP geolocation (`ip-api.com`), free-form location geocoding (Open-Meteo and OpenWeatherMap), and weather feeds.
+6. **`weather.rs` (Weather Providers, Smart Blend & Horizons)**
+   - Wraps `reqwest::Client` (10-second timeout) for IP geolocation (`ip-api.com`), free-form location geocoding (Open-Meteo and OpenWeatherMap), and weather feeds (`"open-meteo"`, `"openweathermap"`, and `"both"`).
+   - In `"both"` (Smart Blend) mode, fetches Open-Meteo and OpenWeatherMap concurrently (`tokio::join!`) with automatic failover to whichever provider responds; aligns OWM's live reading and 3-hour blocks onto Open-Meteo's hourly timeline via linear interpolation (`blend_weather_states`), blending current temperature (`55%` OWM live + `45%` OM), future temperatures (`50%/50%`), precipitation probability (`blend_precip_prob`, `60% max + 40% min + 5%` consensus bonus), and intensity (`blend_precip_rate`).
    - Parses upstream sunrise/sunset timestamps into UTC and determines `is_night` via `check_is_night_at` (handling both standard UTC ordering and wrapped UTC midnight intervals such as NZ/AU).
    - Evaluates configurable temperature high horizons (`current`, `short_high`, `today_high`, `day_high`) and precipitation horizons (`none`, `immediate`, `short`, `today`, `day` via `is_precip_triggered`), classifying intensity (`classify_precip_label`), populating `WeatherState::precip_summary` via `format_precip_alert`, and returning a 24h/48h `debug_forecast`.
 
@@ -86,14 +87,14 @@ graph TD
 
 ### Frontend (`src/`)
 - **`src/api.js`**: Clean JSDoc-documented `window.api` facade over Tauri's `invoke` and `listen`.
-- **`src/settings.html` / `src/settings.js`**: Vanilla HTML/CSS/JS controller structured into 5 sections (DOM Registry, Auto-Resize/Hydration, Location/Settings Handlers, Hardware Status/External Links, Diagnostics Mode). Uses a single `ResizeObserver` so the native window dynamically matches content height and preserves background flags like `autoStart` when saving.
+- **`src/settings.html` / `src/settings.js`**: Vanilla HTML/CSS/JS controller structured into 5 sections (DOM Registry, Auto-Resize/Hydration, Location/Settings Handlers, Hardware Status/External Links, Diagnostics Mode). Uses a single `ResizeObserver` so the native window dynamically matches content height, preserves background flags like `autoStart` when saving, and renders Diagnostics feed tabs (`Smart Blend`, `Open-Meteo`, `OpenWeatherMap`) whenever `weather.providerFeeds` has multiple snapshots.
 
 ## Data Flow
 
 1. **Initialization**: `setup()` loads `AppConfig`, initializes `BusylightController` and `WeatherService`, reconciles OS autostart state, registers the tray icon, and starts the 15-minute scheduler.
 2. **Weather Update (`update_weather_pipeline`)**:
    - Validates location/API key readiness (`WeatherLight - Setup Required` if incomplete).
-   - Fetches normalized `WeatherState` from Open-Meteo or OpenWeatherMap.
+   - Fetches normalized `WeatherState` from Open-Meteo, OpenWeatherMap, or both concurrently (`"both"` Smart Blend).
    - Formats display-unit tray tooltip (`°C`/`°F`) and regenerates the 16x16 tray icon.
    - Unless Diagnostics `manual_mode` is active, turns off the LED during night mode (`config.sunset_sunrise && weather.is_night`) or drives either `set_pulse` (when `weather.has_precipitation && config.pulse`) or `set_solid_pct`.
    - Emits `"busylight-status"` so any open Settings UI reflects current hardware connectivity.

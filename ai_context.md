@@ -10,10 +10,10 @@ This document is optimized for AI agents and future engineers developing and mai
 |---|---|---|
 | `src-tauri/src/lib.rs` | App lifecycle, scheduler, Tauri IPC bridge | `AppState`, `run()`, `update_weather_pipeline()`, `format_tray_tooltip()`, `apply_lighting_target()` |
 | `src-tauri/src/color.rs` | `-50°C..+70°C` palette, interpolation, hex parsing | `COLOR_SCALE`, `calculate_weather_color()`, `hex_to_rgb()`, `hex_to_rgba()` |
-| `src-tauri/src/models.rs` | Shared camelCase JSON DTOs across IPC | `SunTimes`, `WeatherState`, `ForecastItem`, `LocationDetectResult`, `LocationValidationResult`, `DeviceInfoResult`, `ManualState` |
-| `src-tauri/src/config.rs` | Persistent config (`config.json`) & unit conversion | `AppConfig`, `load_config()`, `save_config()`, `get_config_path()`, `AppConfig::format_temperature()` |
+| `src-tauri/src/models.rs` | Shared camelCase JSON DTOs across IPC | `SunTimes`, `WeatherState`, `ProviderFeedSnapshot`, `ForecastItem`, `LocationDetectResult`, `LocationValidationResult`, `DeviceInfoResult`, `ManualState` |
+| `src-tauri/src/config.rs` | Persistent config (`config.json`) & unit conversion | `AppConfig`, `AppConfig::requires_api_key()`, `load_config()`, `save_config()`, `get_config_path()`, `AppConfig::format_temperature()` |
 | `src-tauri/src/busylight.rs` | USB HID packet driver & 30 FPS pulse worker | `Busylight`, `BusylightController`, `PulseState`, `compute_pulse_power_bounds()`, `compute_pulse_frame()`, `scale_color_with_power()` |
-| `src-tauri/src/weather.rs` | IP geolocation, geocoding, Open-Meteo / OWM feeds | `WeatherService`, `check_is_night_at()`, `horizon_hours_openmeteo()`, `horizon_blocks_owm()`, `is_precip_triggered()`, `classify_precip_label()`, `format_precip_alert()` |
+| `src-tauri/src/weather.rs` | IP geolocation, geocoding, Open-Meteo / OWM / Smart Blend feeds | `WeatherService`, `blend_weather_states()`, `blend_precip_prob()`, `blend_precip_rate()`, `check_is_night_at()`, `horizon_hours_openmeteo()`, `horizon_blocks_owm()`, `is_precip_triggered()`, `classify_precip_label()`, `format_precip_alert()` |
 | `src-tauri/src/tray.rs` | System tray menu, autostart sync, 16x16 RGBA icon | `create_tray()`, `update_tray_tooltip()`, `update_tray_icon()`, `render_tray_icon_rgba()` |
 | `src/api.js` | Frontend `window.api` Tauri IPC wrapper | `getSettings`, `saveSettings`, `applyManualState`, `onBusylightStatus`, etc. |
 | `src/settings.html` & `src/settings.js` | Settings & Diagnostics WebView UI | DOM IDs preserved for bindings; single `ResizeObserver`; 5-section modular layout |
@@ -61,6 +61,10 @@ This document is optimized for AI agents and future engineers developing and mai
 4. **UTC Time-of-Day Night Detection (`weather.rs`)**:
    - `check_is_night_at()` compares `NaiveTime` rather than full `DateTime` ordering so Open-Meteo `daily.sunrise`/`sunset` strings remain accurate when sunrise and sunset span across UTC midnight (e.g., NZ/Australia).
 
+5. **Multi-Provider Smart Blend (`"both"` in `weather.rs`, `config.rs`, `settings.js`)**:
+   - `AppConfig::requires_api_key()` guards setup checks whenever `provider` is `"openweathermap"` or `"both"`.
+   - When `provider == "both"`, `WeatherService::fetch()` runs Open-Meteo and OpenWeatherMap concurrently via `tokio::join!`, falling back automatically if one provider errors, and calls `blend_weather_states()` to linearly align OWM 3-hour blocks onto Open-Meteo's hourly timeline while applying consensus probability weighting (`blend_precip_prob`) and intensity blending (`blend_precip_rate`). `WeatherState::provider_feeds` retains `Smart Blend`, `Open-Meteo`, and `OpenWeatherMap` snapshots so Diagnostics Mode can switch tabs across all three streams.
+
 ---
 
 ## Critical Rules
@@ -76,7 +80,7 @@ This document is optimized for AI agents and future engineers developing and mai
 
 1. **Automated Rust Unit Tests (`cargo test`)**:
    - Run `cargo test` inside `z:\projects\weatherlight\src-tauri`.
-   - Covers `color.rs` (hex parsing, extreme clamping, `29.3°C` rounding), `config.rs` (defaults, partial JSON deserialization, `°C`/`°F` math), `busylight.rs` (`0..=100` hardware PWM ceiling, `40°C`/`-19°C`/`29.3°C` pulse curves free of `1..=12` flicker zone, ratio cap, `degamma` monotonicity), `weather.rs` (GMT timestamps, wrapped UTC day/night checks, OWM/Open-Meteo horizons, precipitation thresholds/intensity classification/alert formatting), `tray.rs` (16x16 geometry, corner transparency, night-mode stars), and `lib.rs` (tooltip formatting including Fahrenheit, precipitation alerts & `-0°C` guard).
+   - Covers `color.rs` (hex parsing, extreme clamping, `29.3°C` rounding), `config.rs` (defaults, partial JSON deserialization, `requires_api_key`, `°C`/`°F` math), `busylight.rs` (`0..=100` hardware PWM ceiling, `40°C`/`-19°C`/`29.3°C` pulse curves free of `1..=12` flicker zone, ratio cap, `degamma` monotonicity), `weather.rs` (GMT timestamps, wrapped UTC day/night checks, OWM/Open-Meteo horizons, precipitation thresholds/intensity classification/alert formatting, `"both"` Smart Blend alignment & consensus probability weighting), `tray.rs` (16x16 geometry, corner transparency, night-mode stars), and `lib.rs` (tooltip formatting including Fahrenheit, precipitation alerts & `-0°C` guard).
    - Reference fixtures in root: `Temperature Color Mappings.txt`, `supported.json`, and `generate_scale.js`.
 
 2. **Live Dev / Release Verification**:

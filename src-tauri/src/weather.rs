@@ -1,17 +1,22 @@
-//! Weather data retrieval, geolocation, forecast parsing, and day/night detection.
+//! Weather data retrieval, geolocation, forecast parsing, blending, and day/night detection.
 //!
-//! `WeatherService` abstracts two upstream weather providers behind a uniform `WeatherState`:
+//! `WeatherService` abstracts upstream weather providers behind a uniform `WeatherState`:
 //! 1. **Open-Meteo** (default, keyless): hourly forecasts (`temperature_2m`,
 //!    `precipitation_probability`, `rain`, `showers`, `snowfall`) plus daily GMT sunrise/sunset.
 //! 2. **OpenWeatherMap** (BYOK API key): current conditions (`weather`) paired with 3-hour
 //!    interval forecasts (`forecast`) and Unix sunrise/sunset timestamps.
+//! 3. **Smart Blend (`"both"`, BYOK API key)**: queries Open-Meteo and OpenWeatherMap
+//!    concurrently (`tokio::join!`), aligns OWM's 3-hour blocks and live station temperature onto
+//!    Open-Meteo's hourly timeline, applies consensus precipitation weighting, and automatically
+//!    falls back to the surviving provider if either API fails.
 //!
 //! Automatic IP geolocation uses `http://ip-api.com/json/`, falling back gracefully to manual
 //! `"City, State/Country"` geocoding when auto-location is disabled or unavailable.
 
 use crate::config::AppConfig;
 use crate::models::{
-    ForecastItem, LocationDetectResult, LocationValidationResult, SunTimes, WeatherState,
+    ForecastItem, LocationDetectResult, LocationValidationResult, ProviderFeedSnapshot, SunTimes,
+    WeatherState,
 };
 use chrono::{DateTime, Local, TimeZone, Timelike, Utc};
 use reqwest::Client;
@@ -218,6 +223,244 @@ fn extract_owm_precip(item: &serde_json::Value) -> (f64, f64, f64) {
     (pop_pct, rain_3h, snow_3h)
 }
 
+/// Consensus-weighted precipitation probability (`0..=100%`) combiner for dual-provider blending.
+///
+/// Weights the higher-confidence stream at `60%` and the lower at `40%`, adding a `+5%`
+/// agreement bonus when both models report `>= 25%`. This filters isolated single-model trace
+/// noise (`40%` vs `0%` -> `24%`), promotes cross-model agreement (`30%` vs `30%` -> `35%`), and
+/// preserves high-confidence single-model storms (`60%` vs `0%` -> `36%`).
+pub fn blend_precip_prob(prob_a: f64, prob_b: f64) -> f64 {
+    let p_max = prob_a.max(prob_b).clamp(0.0, 100.0);
+    let p_min = prob_a.min(prob_b).clamp(0.0, 100.0);
+    let consensus_boost = if p_min >= 25.0 { 5.0 } else { 0.0 };
+    (0.6 * p_max + 0.4 * p_min + consensus_boost).clamp(0.0, 100.0)
+}
+
+/// Confidence-weighted hourly precipitation rate (`mm/hr`) combiner for dual-provider blending.
+pub fn blend_precip_rate(rate_a: f64, rate_b: f64) -> f64 {
+    let r_max = rate_a.max(rate_b).max(0.0);
+    let r_min = rate_a.min(rate_b).max(0.0);
+    0.6 * r_max + 0.4 * r_min
+}
+
+/// Linearly interpolates OpenWeatherMap 3-hour forecast slots `(temp, prob, rain_mm_hr, snow_mm_hr)`
+/// at `target_time` so 3-hour blocks align onto Open-Meteo's hourly timeline.
+fn interpolate_owm_slot_at(
+    owm_forecast: &[ForecastItem],
+    target_time: DateTime<Utc>,
+    fallback_temp: f64,
+) -> (f64, f64, f64, f64) {
+    let Some(first) = owm_forecast.first() else {
+        return (fallback_temp, 0.0, 0.0, 0.0);
+    };
+    if target_time <= first.time {
+        return (
+            first.temp,
+            first.precip_prob,
+            first.rain_mm_hr,
+            first.snow_mm_hr,
+        );
+    }
+
+    let last = owm_forecast.last().unwrap_or(first);
+    if target_time >= last.time {
+        return (last.temp, last.precip_prob, last.rain_mm_hr, last.snow_mm_hr);
+    }
+
+    for pair in owm_forecast.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        if target_time >= a.time && target_time <= b.time {
+            let span_secs = (b.time - a.time).num_seconds() as f64;
+            if span_secs <= 0.0 {
+                return (a.temp, a.precip_prob, a.rain_mm_hr, a.snow_mm_hr);
+            }
+            let alpha = (target_time - a.time).num_seconds() as f64 / span_secs;
+            let lerp = |x: f64, y: f64| x + (y - x) * alpha;
+            return (
+                lerp(a.temp, b.temp),
+                lerp(a.precip_prob, b.precip_prob),
+                lerp(a.rain_mm_hr, b.rain_mm_hr),
+                lerp(a.snow_mm_hr, b.snow_mm_hr),
+            );
+        }
+    }
+
+    (last.temp, last.precip_prob, last.rain_mm_hr, last.snow_mm_hr)
+}
+
+/// Rounds a Celsius temperature to one decimal place (`0.1°C`) for clean display and IPC output.
+fn round_tenths(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+/// Assembles ordered Diagnostics tab snapshots (`blended`, `open-meteo`, `openweathermap`).
+fn build_provider_feeds(
+    blended_temp: f64,
+    blended_has_precip: bool,
+    blended_precip_summary: Option<String>,
+    blended_forecast: Vec<ForecastItem>,
+    om: &WeatherState,
+    owm: &WeatherState,
+) -> Vec<ProviderFeedSnapshot> {
+    vec![
+        ProviderFeedSnapshot {
+            id: "blended".to_string(),
+            name: "Smart Blend".to_string(),
+            temperature: blended_temp,
+            has_precipitation: blended_has_precip,
+            precip_summary: blended_precip_summary,
+            forecast: blended_forecast,
+        },
+        ProviderFeedSnapshot {
+            id: "open-meteo".to_string(),
+            name: "Open-Meteo".to_string(),
+            temperature: om.temperature,
+            has_precipitation: om.has_precipitation,
+            precip_summary: om.precip_summary.clone(),
+            forecast: om.debug_forecast.clone(),
+        },
+        ProviderFeedSnapshot {
+            id: "openweathermap".to_string(),
+            name: "OpenWeatherMap".to_string(),
+            temperature: owm.temperature,
+            has_precipitation: owm.has_precipitation,
+            precip_summary: owm.precip_summary.clone(),
+            forecast: owm.debug_forecast.clone(),
+        },
+    ]
+}
+
+/// Melds an hourly Open-Meteo snapshot and a live/3-hour OpenWeatherMap snapshot into a single
+/// consensus `WeatherState` honoring `config.temp_horizon` and `config.precip_horizon`.
+pub fn blend_weather_states(
+    om: &WeatherState,
+    owm: &WeatherState,
+    config: &AppConfig,
+    current_local_hour: u32,
+) -> WeatherState {
+    let (precip_hours, temp_hours) = horizon_hours_openmeteo(
+        &config.precip_horizon,
+        &config.temp_horizon,
+        current_local_hour,
+    );
+
+    let sun_times = SunTimes {
+        sunrise: owm.sun_times.sunrise.or(om.sun_times.sunrise),
+        sunset: owm.sun_times.sunset.or(om.sun_times.sunset),
+    };
+    let is_night = check_is_night_at(&sun_times, Utc::now());
+
+    // Anchor the blended forecast curve to Open-Meteo's 1-hour UTC timestamps.
+    let mut blended_forecast = Vec::with_capacity(om.debug_forecast.len());
+    for (idx, om_slot) in om.debug_forecast.iter().enumerate() {
+        let (owm_temp, owm_prob, owm_rain, owm_snow) =
+            interpolate_owm_slot_at(&owm.debug_forecast, om_slot.time, owm.temperature);
+
+        let raw_blended_temp = if idx == 0 && config.temp_horizon == "current" {
+            // Bias hour 0 toward OpenWeatherMap's real-time surface station measurement.
+            0.55 * owm.temperature + 0.45 * om_slot.temp
+        } else {
+            0.50 * owm_temp + 0.50 * om_slot.temp
+        };
+        let blended_temp = round_tenths(raw_blended_temp);
+
+        let blended_prob = blend_precip_prob(om_slot.precip_prob, owm_prob);
+        let blended_rain = blend_precip_rate(om_slot.rain_mm_hr, owm_rain);
+        let blended_snow = blend_precip_rate(om_slot.snow_mm_hr, owm_snow);
+        let precip_type =
+            classify_precip_label(blended_temp, blended_prob, blended_rain, blended_snow);
+
+        blended_forecast.push(ForecastItem {
+            time: om_slot.time,
+            temp: blended_temp,
+            precip_prob: blended_prob,
+            precip_type,
+            rain_mm_hr: blended_rain,
+            snow_mm_hr: blended_snow,
+        });
+    }
+
+    if blended_forecast.is_empty() {
+        let temperature = round_tenths(0.55 * owm.temperature + 0.45 * om.temperature);
+        let has_precipitation = om.has_precipitation || owm.has_precipitation;
+        let precip_summary = om.precip_summary.clone().or_else(|| owm.precip_summary.clone());
+        let provider_feeds = build_provider_feeds(
+            temperature,
+            has_precipitation,
+            precip_summary.clone(),
+            owm.debug_forecast.clone(),
+            om,
+            owm,
+        );
+        return WeatherState {
+            temperature,
+            has_precipitation,
+            precip_summary,
+            location_name: om.location_name.clone(),
+            sun_times,
+            is_night,
+            provider: "Combined (Open-Meteo + OWM)".to_string(),
+            last_updated: Utc::now(),
+            debug_forecast: owm.debug_forecast.clone(),
+            provider_feeds,
+        };
+    }
+
+    let temperature = if temp_hours == 0 {
+        round_tenths(0.55 * owm.temperature + 0.45 * om.temperature)
+    } else {
+        let temp_limit = std::cmp::min(temp_hours, blended_forecast.len()).max(1);
+        blended_forecast[0..temp_limit]
+            .iter()
+            .map(|f| f.temp)
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+
+    let mut has_precipitation = false;
+    let mut precip_summary: Option<String> = None;
+    if precip_hours > 0 {
+        let precip_limit = std::cmp::min(precip_hours, blended_forecast.len());
+        for (idx, slot) in blended_forecast[0..precip_limit].iter().enumerate() {
+            if is_precip_triggered(slot.precip_prob, slot.rain_mm_hr, 0.0, slot.snow_mm_hr) {
+                has_precipitation = true;
+                let time_str = if idx == 0 {
+                    None
+                } else {
+                    Some(format_local_clock(slot.time))
+                };
+                precip_summary = Some(format_precip_alert(
+                    &slot.precip_type,
+                    slot.precip_prob,
+                    time_str.as_deref(),
+                ));
+                break;
+            }
+        }
+    }
+
+    let provider_feeds = build_provider_feeds(
+        temperature,
+        has_precipitation,
+        precip_summary.clone(),
+        blended_forecast.clone(),
+        om,
+        owm,
+    );
+
+    WeatherState {
+        temperature,
+        has_precipitation,
+        precip_summary,
+        location_name: om.location_name.clone(),
+        sun_times,
+        is_night,
+        provider: "Combined (Open-Meteo + OWM)".to_string(),
+        last_updated: Utc::now(),
+        debug_forecast: blended_forecast,
+        provider_feeds,
+    }
+}
+
 /// HTTP weather and geolocation client shared across background polling and Tauri commands.
 pub struct WeatherService {
     client: Client,
@@ -252,6 +495,14 @@ impl WeatherService {
             let geo = if config.provider == "openweathermap" && !config.api_key.is_empty() {
                 self.geocode_openweathermap(&config.location, &config.api_key)
                     .await
+            } else if config.provider == "both" && !config.api_key.is_empty() {
+                match self.geocode_openmeteo(&config.location).await {
+                    Ok(Some(found)) => Ok(Some(found)),
+                    _ => {
+                        self.geocode_openweathermap(&config.location, &config.api_key)
+                            .await
+                    }
+                }
             } else {
                 self.geocode_openmeteo(&config.location).await
             };
@@ -267,8 +518,30 @@ impl WeatherService {
         let lon = lon.ok_or_else(|| "No location set".to_string())?;
         let loc_name = location_name.unwrap_or_else(|| "Unknown".to_string());
 
-        // 3. Query the configured upstream weather provider.
-        if config.provider == "openweathermap" && !config.api_key.is_empty() {
+        // 3. Query the configured upstream weather provider(s).
+        if config.provider == "both" && !config.api_key.is_empty() {
+            let (om_res, owm_res) = tokio::join!(
+                self.fetch_openmeteo(lat, lon, loc_name.clone(), config),
+                self.fetch_openweathermap(lat, lon, loc_name, &config.api_key, config),
+            );
+
+            match (om_res, owm_res) {
+                (Ok(om), Ok(owm)) => {
+                    Ok(blend_weather_states(&om, &owm, config, Local::now().hour()))
+                }
+                (Ok(mut om), Err(_)) => {
+                    om.provider = "Open-Meteo (OWM fallback)".to_string();
+                    Ok(om)
+                }
+                (Err(_), Ok(mut owm)) => {
+                    owm.provider = "OpenWeatherMap (Open-Meteo fallback)".to_string();
+                    Ok(owm)
+                }
+                (Err(e_om), Err(e_owm)) => {
+                    Err(format!("Both weather providers failed: {}; {}", e_om, e_owm))
+                }
+            }
+        } else if config.provider == "openweathermap" && !config.api_key.is_empty() {
             self.fetch_openweathermap(lat, lon, loc_name, &config.api_key, config)
                 .await
         } else {
@@ -626,14 +899,17 @@ impl WeatherService {
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
             let (pop_val, rain_3h, snow_3h) = extract_owm_precip(item);
-            let precip_type =
-                classify_precip_label(temp_val, pop_val, rain_3h / 3.0, snow_3h / 3.0);
+            let rain_mm_hr = rain_3h / 3.0;
+            let snow_mm_hr = snow_3h / 3.0;
+            let precip_type = classify_precip_label(temp_val, pop_val, rain_mm_hr, snow_mm_hr);
 
             debug_forecast.push(ForecastItem {
                 time: Utc.timestamp_opt(time_val, 0).single().unwrap_or_else(Utc::now),
                 temp: temp_val,
                 precip_prob: pop_val,
                 precip_type,
+                rain_mm_hr,
+                snow_mm_hr,
             });
         }
 
@@ -648,6 +924,7 @@ impl WeatherService {
             provider: "OpenWeatherMap".to_string(),
             last_updated: Utc::now(),
             debug_forecast,
+            provider_feeds: Vec::new(),
         })
     }
 
@@ -817,14 +1094,18 @@ impl WeatherService {
                         .and_then(|v| v.as_f64())
                         .unwrap_or(0.0);
 
+                    let rain_mm_hr = rain_val + show_val;
+                    let snow_mm_hr = snow_val;
                     let precip_type =
-                        classify_precip_label(t_val, prob_val, rain_val + show_val, snow_val);
+                        classify_precip_label(t_val, prob_val, rain_mm_hr, snow_mm_hr);
 
                     debug_forecast.push(ForecastItem {
                         time: dt,
                         temp: t_val,
                         precip_prob: prob_val,
                         precip_type,
+                        rain_mm_hr,
+                        snow_mm_hr,
                     });
                 }
             }
@@ -841,6 +1122,7 @@ impl WeatherService {
             provider: "Open-Meteo".to_string(),
             last_updated: Utc::now(),
             debug_forecast,
+            provider_feeds: Vec::new(),
         })
     }
 }
@@ -991,6 +1273,160 @@ mod tests {
         assert_eq!(
             format_precip_alert("Moderate rain", 0.0, None),
             "Moderate rain now"
+        );
+    }
+
+    #[test]
+    fn test_blend_precip_prob_consensus_and_noise_filtering() {
+        // Single-model borderline blip (40% vs 0%) is damped below the 35% pulse threshold.
+        assert!((blend_precip_prob(40.0, 0.0) - 24.0).abs() < 1e-6);
+        assert!((blend_precip_prob(0.0, 40.0) - 24.0).abs() < 1e-6);
+
+        // Dual-model agreement (30% vs 30%) earns the +5% consensus bonus to cross 35%.
+        assert!((blend_precip_prob(30.0, 30.0) - 35.0).abs() < 1e-6);
+
+        // High-confidence single-model event (60% vs 0%) remains above 35%.
+        assert!((blend_precip_prob(60.0, 0.0) - 36.0).abs() < 1e-6);
+
+        // Extreme inputs clamp cleanly within 0..=100.
+        assert!((blend_precip_prob(100.0, 95.0) - 100.0).abs() < 1e-6);
+        assert!((blend_precip_prob(-5.0, 0.0) - 0.0).abs() < 1e-6);
+
+        // Precipitation rate blending filters sub-threshold single-model noise while keeping strong events.
+        assert!((blend_precip_rate(0.4, 0.0) - 0.24).abs() < 1e-6);
+        assert!((blend_precip_rate(0.9, 0.0) - 0.54).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_blend_weather_states_hourly_alignment_and_horizons() {
+        let t0 = Utc.with_ymd_and_hms(2026, 11, 16, 12, 0, 0).unwrap();
+        let t1 = t0 + chrono::Duration::hours(1);
+        let t2 = t0 + chrono::Duration::hours(2);
+        let t3 = t0 + chrono::Duration::hours(3);
+
+        let sun_times = SunTimes {
+            sunrise: Some(Utc.with_ymd_and_hms(2026, 11, 16, 6, 0, 0).unwrap()),
+            sunset: Some(Utc.with_ymd_and_hms(2026, 11, 16, 18, 0, 0).unwrap()),
+        };
+
+        let om = WeatherState {
+            temperature: 20.0,
+            has_precipitation: false,
+            precip_summary: None,
+            location_name: "Testville, NZ".to_string(),
+            sun_times: sun_times.clone(),
+            is_night: false,
+            provider: "Open-Meteo".to_string(),
+            last_updated: t0,
+            provider_feeds: Vec::new(),
+            debug_forecast: vec![
+                ForecastItem {
+                    time: t0,
+                    temp: 20.0,
+                    precip_prob: 0.0,
+                    precip_type: "None".to_string(),
+                    rain_mm_hr: 0.0,
+                    snow_mm_hr: 0.0,
+                },
+                ForecastItem {
+                    time: t1,
+                    temp: 21.0,
+                    precip_prob: 10.0,
+                    precip_type: "None".to_string(),
+                    rain_mm_hr: 0.0,
+                    snow_mm_hr: 0.0,
+                },
+                ForecastItem {
+                    time: t2,
+                    temp: 24.0,
+                    precip_prob: 50.0,
+                    precip_type: "Light rain".to_string(),
+                    rain_mm_hr: 1.2,
+                    snow_mm_hr: 0.0,
+                },
+                ForecastItem {
+                    time: t3,
+                    temp: 22.0,
+                    precip_prob: 10.0,
+                    precip_type: "None".to_string(),
+                    rain_mm_hr: 0.0,
+                    snow_mm_hr: 0.0,
+                },
+            ],
+        };
+
+        let owm = WeatherState {
+            temperature: 22.0,
+            has_precipitation: true,
+            precip_summary: Some("Rain 40% likely now".to_string()),
+            location_name: "Testville, NZ".to_string(),
+            sun_times,
+            is_night: false,
+            provider: "OpenWeatherMap".to_string(),
+            last_updated: t0,
+            provider_feeds: Vec::new(),
+            debug_forecast: vec![
+                ForecastItem {
+                    time: t0,
+                    temp: 22.0,
+                    precip_prob: 40.0,
+                    precip_type: "Rain".to_string(),
+                    rain_mm_hr: 0.3,
+                    snow_mm_hr: 0.0,
+                },
+                ForecastItem {
+                    time: t3,
+                    temp: 26.0,
+                    precip_prob: 40.0,
+                    precip_type: "Light rain".to_string(),
+                    rain_mm_hr: 0.8,
+                    snow_mm_hr: 0.0,
+                },
+            ],
+        };
+
+        // 1. Immediate/current horizons: OWM's premature 40% at hour 0 is suppressed by Open-Meteo's 0%,
+        //    and current temp blends 55% live OWM (22.0) + 45% Open-Meteo (20.0) = 21.1°C.
+        let mut cfg = AppConfig::default();
+        cfg.provider = "both".to_string();
+        cfg.temp_horizon = "current".to_string();
+        cfg.precip_horizon = "immediate".to_string();
+
+        let blended_now = blend_weather_states(&om, &owm, &cfg, 12);
+        assert_eq!(blended_now.provider, "Combined (Open-Meteo + OWM)");
+        assert!((blended_now.temperature - 21.1).abs() < 1e-6);
+        assert!(!blended_now.has_precipitation);
+        assert_eq!(blended_now.precip_summary, None);
+
+        // 2. Short-term (6h) horizons: high temp rounds cleanly to 24.3°C at +2h,
+        //    and precipitation triggers sharply at +2h where both models agree (51% likely).
+        cfg.temp_horizon = "short_high".to_string();
+        cfg.precip_horizon = "short".to_string();
+
+        let blended_short = blend_weather_states(&om, &owm, &cfg, 12);
+        assert_eq!(blended_short.provider, "Combined (Open-Meteo + OWM)");
+        assert!((blended_short.temperature - 24.3).abs() < 1e-6);
+        assert!(blended_short.has_precipitation);
+        assert_eq!(
+            blended_short.precip_summary,
+            Some(format!("Light rain 51% likely at {}", format_local_clock(t2)))
+        );
+
+        // 3. Diagnostics tabs preserve all 3 feed snapshots (blended + both upstream raw feeds).
+        assert_eq!(blended_short.provider_feeds.len(), 3);
+        assert_eq!(blended_short.provider_feeds[0].id, "blended");
+        assert_eq!(blended_short.provider_feeds[0].name, "Smart Blend");
+        assert_eq!(blended_short.provider_feeds[0].forecast, blended_short.debug_forecast);
+
+        assert_eq!(blended_short.provider_feeds[1].id, "open-meteo");
+        assert_eq!(blended_short.provider_feeds[1].forecast.len(), 4);
+        assert!(!blended_short.provider_feeds[1].has_precipitation);
+
+        assert_eq!(blended_short.provider_feeds[2].id, "openweathermap");
+        assert_eq!(blended_short.provider_feeds[2].forecast.len(), 2);
+        assert_eq!(
+            blended_short.provider_feeds[2].precip_summary.as_deref(),
+            Some("Rain 40% likely now")
         );
     }
 }

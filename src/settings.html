@@ -246,6 +246,38 @@
         .disconnected {
             background-color: var(--danger);
         }
+
+        /* Provider breakdown tabs above Diagnostics forecast table in Smart Blend mode */
+        .feed-tabs {
+            display: none;
+            gap: 4px;
+            margin-bottom: -1px;
+        }
+
+        .feed-tab {
+            padding: 6px 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            background: #e9eef3;
+            color: var(--text-secondary);
+            border: 1px solid #ccc;
+            border-bottom: none;
+            border-radius: 4px 4px 0 0;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+
+        .feed-tab:hover {
+            background: #f5f8fa;
+            color: var(--text);
+        }
+
+        .feed-tab.active {
+            background: #f0f0f0;
+            color: var(--primary);
+            position: relative;
+            z-index: 1;
+        }
     </style>
 </head>
 
@@ -265,8 +297,12 @@
                     <select id="provider">
                         <option value="open-meteo">Open-Meteo</option>
                         <option value="openweathermap">OpenWeatherMap (Free API Key Required)</option>
+                        <option value="both">Both — Smart Blend (Open-Meteo + OpenWeatherMap)</option>
                     </select>
                 </div>
+                <span id="provider-blend-hint" class="status"
+                    style="display: none; color: var(--text-secondary);">Combines Open-Meteo's hourly model with
+                    OpenWeatherMap's live station data for higher accuracy and automatic fallback.</span>
             </div>
 
             <div class="setting" id="apiKeyContainer">
@@ -389,7 +425,12 @@
 
             <div class="setting">
                 <label>Next 24 Hours (Feed Data)</label>
-                <div
+                <div id="diag-feed-tabs" class="feed-tabs">
+                    <button type="button" class="feed-tab active" data-feed-id="blended">Smart Blend</button>
+                    <button type="button" class="feed-tab" data-feed-id="open-meteo">Open-Meteo</button>
+                    <button type="button" class="feed-tab" data-feed-id="openweathermap">OpenWeatherMap</button>
+                </div>
+                <div id="diag-table-wrap"
                     style="max-height: 200px; overflow-y: auto; background: #fff; border: 1px solid #ccc; border-radius: 4px;">
                     <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left;">
                         <thead style="background: #f0f0f0; position: sticky; top: 0;">
@@ -436,8 +477,12 @@
                 Detecting hardware...
             </div>
             <div style="font-size: 0.8rem; color: #999;">
-                Weather data by <a href="#" id="openMeteoLink"
-                    style="color: #999; text-decoration: underline;">Open-Meteo.com</a>
+                Weather data by
+                <span id="footerOpenMeteoWrap"><a href="#" id="openMeteoLink"
+                        style="color: #999; text-decoration: underline;">Open-Meteo.com</a></span><span
+                    id="footerBothSep" style="display: none;"> &amp; </span><span id="footerOwmWrap"
+                    style="display: none;"><a href="#" id="owmFooterLink"
+                        style="color: #999; text-decoration: underline;">OpenWeatherMap.org</a></span>
                 | <a href="#" id="openDiagnostics" style="color: #999; text-decoration: underline;">Diagnostics</a>
             </div>
         </div>

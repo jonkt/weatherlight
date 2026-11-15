@@ -30,6 +30,12 @@ let isDirty = false;
 /** Timer resetting temporary "Applied ✓" label back to "Apply". */
 let applyFeedbackTimeout = null;
 
+/** Latest `WeatherState` cached while Diagnostics Mode is open (backing feed tab switches). */
+let cachedDiagWeather = null;
+
+/** Currently selected Diagnostics feed tab id (`'blended' | 'open-meteo' | 'openweathermap'`). */
+let activeDiagFeedId = 'blended';
+
 document.addEventListener('DOMContentLoaded', () => {
     initializeApp();
 });
@@ -50,6 +56,7 @@ function initializeApp() {
 
         // Weather provider & API key
         provider: document.getElementById('provider'),
+        providerBlendHint: document.getElementById('provider-blend-hint'),
         apiKeyContainer: document.getElementById('apiKeyContainer'),
         apiKeyHelpIcon: document.getElementById('apiKeyHelpIcon'),
         apiKeyHelp: document.getElementById('apiKeyHelp'),
@@ -78,15 +85,21 @@ function initializeApp() {
         saveButton: document.getElementById('save'),
         closeButton: document.getElementById('close'),
 
-        // External links
+        // External links & attribution
         owmLink: document.getElementById('owmLink'),
         openMeteoLink: document.getElementById('openMeteoLink'),
+        owmFooterLink: document.getElementById('owmFooterLink'),
+        footerOpenMeteoWrap: document.getElementById('footerOpenMeteoWrap'),
+        footerBothSep: document.getElementById('footerBothSep'),
+        footerOwmWrap: document.getElementById('footerOwmWrap'),
         busylightLink: document.getElementById('busylightLink'),
         openDiagnostics: document.getElementById('openDiagnostics'),
 
         // Diagnostics controls
         diagDeviceInfo: document.getElementById('diag-device-info'),
         diagWeatherInfo: document.getElementById('diag-weather-info'),
+        diagFeedTabs: document.getElementById('diag-feed-tabs'),
+        diagTableWrap: document.getElementById('diag-table-wrap'),
         diagForecastTable: document.getElementById('diag-forecast-table'),
         diagManualMode: document.getElementById('diag-manual-mode'),
         diagControls: document.getElementById('diag-controls'),
@@ -153,8 +166,20 @@ function setupWindowAutoResize() {
  * Synchronizes conditional form visibility and disabled states with current control values.
  */
 function updateUIState() {
-    const isOWM = dom.provider.value === 'openweathermap';
+    const provider = dom.provider.value;
+    const isOWM = provider === 'openweathermap' || provider === 'both';
+    const isBoth = provider === 'both';
+
     dom.apiKeyContainer.style.display = isOWM ? 'block' : 'none';
+    if (dom.providerBlendHint) {
+        dom.providerBlendHint.style.display = isBoth ? 'block' : 'none';
+    }
+
+    if (dom.footerOpenMeteoWrap && dom.footerOwmWrap && dom.footerBothSep) {
+        dom.footerOpenMeteoWrap.style.display = provider === 'openweathermap' ? 'none' : 'inline';
+        dom.footerBothSep.style.display = isBoth ? 'inline' : 'none';
+        dom.footerOwmWrap.style.display = isOWM ? 'inline' : 'none';
+    }
 
     const precipHorizonVal = dom.precipHorizon.value || 'none';
     dom.pulseSpeedContainer.style.display = precipHorizonVal !== 'none' ? 'block' : 'none';
@@ -528,6 +553,7 @@ function attachExternalLinkListeners() {
     };
 
     bindExternal(dom.owmLink, 'https://openweathermap.org');
+    bindExternal(dom.owmFooterLink, 'https://openweathermap.org');
     bindExternal(dom.openMeteoLink, 'https://open-meteo.com/');
     bindExternal(dom.busylightLink, 'https://busylight.com/');
 }
@@ -547,6 +573,100 @@ function escapeHtml(value) {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
+}
+
+/**
+ * Renders the Diagnostics Weather Feed Status card and forecast table for the chosen feed tab.
+ * When Smart Blend (`weather.providerFeeds`) is active, allows switching between the blended
+ * stream and each underlying upstream provider without mutating cached weather state.
+ * @param {Object | null} weather Latest `WeatherState` snapshot from backend.
+ * @param {string} [feedId='blended'] Active feed tab id (`'blended' | 'open-meteo' | 'openweathermap'`).
+ */
+function renderDiagnosticsWeather(weather, feedId = 'blended') {
+    if (!dom.diagWeatherInfo) return;
+
+    if (!weather) {
+        if (dom.diagFeedTabs) dom.diagFeedTabs.style.display = 'none';
+        if (dom.diagTableWrap) dom.diagTableWrap.style.borderTopLeftRadius = '4px';
+        dom.diagWeatherInfo.textContent = 'No weather data available yet.';
+        if (dom.diagForecastTable) dom.diagForecastTable.innerHTML = '';
+        return;
+    }
+
+    const feeds = Array.isArray(weather.providerFeeds) ? weather.providerFeeds : [];
+    const hasTabs = feeds.length > 1;
+    let activeFeed = null;
+
+    if (dom.diagFeedTabs) {
+        dom.diagFeedTabs.style.display = hasTabs ? 'flex' : 'none';
+    }
+    if (dom.diagTableWrap) {
+        dom.diagTableWrap.style.borderTopLeftRadius = hasTabs ? '0' : '4px';
+        dom.diagTableWrap.scrollTop = 0;
+    }
+
+    if (hasTabs) {
+        activeFeed = feeds.find((f) => f.id === feedId) || feeds[0];
+        activeDiagFeedId = activeFeed.id;
+
+        if (dom.diagFeedTabs) {
+            dom.diagFeedTabs.querySelectorAll('.feed-tab').forEach((btn) => {
+                btn.classList.toggle('active', btn.dataset.feedId === activeFeed.id);
+            });
+        }
+    }
+
+    const updated = weather.lastUpdated
+        ? new Date(weather.lastUpdated).toLocaleString()
+        : 'Unknown';
+    const night = weather.isNight ? 'Yes' : 'No';
+
+    const displayTemp = activeFeed ? activeFeed.temperature : weather.temperature;
+    const hasPrecip = activeFeed ? activeFeed.hasPrecipitation : weather.hasPrecipitation;
+    const precipSummary = activeFeed ? activeFeed.precipSummary : weather.precipSummary;
+    const rows = activeFeed ? activeFeed.forecast : (weather.debugForecast || []);
+    const providerLabel = activeFeed && activeFeed.id !== 'blended'
+        ? `${activeFeed.name} (Raw Feed)`
+        : (weather.provider || 'Unknown');
+
+    const precip = hasPrecip
+        ? precipSummary
+            ? `Yes (${escapeHtml(precipSummary)})`
+            : 'Yes'
+        : 'No';
+
+    let feedCompareHtml = '';
+    if (hasTabs && activeFeed && activeFeed.id === 'blended') {
+        const omFeed = feeds.find((f) => f.id === 'open-meteo');
+        const owmFeed = feeds.find((f) => f.id === 'openweathermap');
+        if (omFeed && owmFeed) {
+            feedCompareHtml = `<strong>Source Feeds:</strong> Open-Meteo ${omFeed.temperature.toFixed(1)}°C | OpenWeatherMap ${owmFeed.temperature.toFixed(1)}°C<br>`;
+        }
+    }
+
+    dom.diagWeatherInfo.innerHTML = `
+        <strong>Provider:</strong> ${escapeHtml(providerLabel)}<br>
+        <strong>Location:</strong> ${escapeHtml(weather.locationName || 'Unknown')}<br>
+        <strong>Temperature:</strong> ${displayTemp}°C<br>
+        ${feedCompareHtml}<strong>Precipitation:</strong> ${precip}<br>
+        <strong>Night Mode:</strong> ${night}<br>
+        <strong>Last Updated:</strong> ${escapeHtml(updated)}
+    `;
+
+    if (dom.diagForecastTable) {
+        dom.diagForecastTable.innerHTML = rows
+            .map(
+                (item) => `
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding: 4px;">${new Date(item.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                    <td style="padding: 4px;">${item.temp.toFixed(1)}°</td>
+                    <td style="padding: 4px;">${Math.round(item.precipProb)}%</td>
+                    <td style="padding: 4px;">${escapeHtml(item.precipType)}</td>
+                </tr>
+            `
+            )
+            .join('');
+    }
 }
 
 /**
@@ -580,45 +700,11 @@ async function loadDiagnostics() {
     dom.diagWeatherInfo.textContent = 'Fetching weather data...';
 
     try {
-        const weather = await window.api.getWeatherState();
-        if (weather) {
-            const updated = weather.lastUpdated
-                ? new Date(weather.lastUpdated).toLocaleString()
-                : 'Unknown';
-            const precip = weather.hasPrecipitation
-                ? weather.precipSummary
-                    ? `Yes (${escapeHtml(weather.precipSummary)})`
-                    : 'Yes'
-                : 'No';
-            const night = weather.isNight ? 'Yes' : 'No';
-
-            dom.diagWeatherInfo.innerHTML = `
-                <strong>Provider:</strong> ${escapeHtml(weather.provider || 'Unknown')}<br>
-                <strong>Location:</strong> ${escapeHtml(weather.locationName || 'Unknown')}<br>
-                <strong>Temperature:</strong> ${weather.temperature}°C<br>
-                <strong>Precipitation:</strong> ${precip}<br>
-                <strong>Night Mode:</strong> ${night}<br>
-                <strong>Last Updated:</strong> ${escapeHtml(updated)}
-            `;
-
-            if (dom.diagForecastTable && weather.debugForecast) {
-                dom.diagForecastTable.innerHTML = weather.debugForecast
-                    .map(
-                        (item) => `
-                        <tr style="border-bottom: 1px solid #eee;">
-                            <td style="padding: 4px;">${new Date(item.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                            <td style="padding: 4px;">${item.temp.toFixed(1)}°</td>
-                            <td style="padding: 4px;">${Math.round(item.precipProb)}%</td>
-                            <td style="padding: 4px;">${escapeHtml(item.precipType)}</td>
-                        </tr>
-                    `
-                    )
-                    .join('');
-            }
-        } else {
-            dom.diagWeatherInfo.textContent = 'No weather data available yet.';
-        }
+        cachedDiagWeather = await window.api.getWeatherState();
+        activeDiagFeedId = 'blended';
+        renderDiagnosticsWeather(cachedDiagWeather, activeDiagFeedId);
     } catch (e) {
+        if (dom.diagFeedTabs) dom.diagFeedTabs.style.display = 'none';
         dom.diagWeatherInfo.textContent = 'Error fetching weather data.';
         console.error(e);
     }
@@ -687,6 +773,16 @@ function attachDiagnosticsListeners() {
     dom.diagClose.addEventListener('click', () => {
         toggleDiagnostics(false);
     });
+
+    if (dom.diagFeedTabs) {
+        dom.diagFeedTabs.querySelectorAll('.feed-tab').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                if (!cachedDiagWeather) return;
+                renderDiagnosticsWeather(cachedDiagWeather, btn.dataset.feedId);
+                syncWindowSize();
+            });
+        });
+    }
 
     dom.diagManualMode.addEventListener('change', () => {
         window.api.setManualMode(dom.diagManualMode.checked);

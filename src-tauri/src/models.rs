@@ -22,8 +22,9 @@ pub struct SunTimes {
 
 /// Complete normalized weather snapshot produced by `WeatherService` and cached in `AppState`.
 ///
-/// Regardless of whether Open-Meteo or OpenWeatherMap fetched the data, downstream modules
-/// (color calculation, Busylight controller, tray icon, and Diagnostics UI) consume this uniform shape.
+/// Regardless of whether Open-Meteo, OpenWeatherMap, or `"both"` (Smart Blend) fetched the data,
+/// downstream modules (color calculation, Busylight controller, tray icon, and Diagnostics UI)
+/// consume this uniform shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WeatherState {
@@ -41,12 +42,36 @@ pub struct WeatherState {
     pub sun_times: SunTimes,
     /// `true` when the location's current UTC time falls outside the sunrise..sunset daylight window.
     pub is_night: bool,
-    /// Friendly name of the provider that produced this snapshot (`"Open-Meteo"` or `"OpenWeatherMap"`).
+    /// Friendly name of the provider that produced this snapshot
+    /// (`"Open-Meteo"`, `"OpenWeatherMap"`, or `"Combined (Open-Meteo + OWM)"`).
     pub provider: String,
     /// Timestamp when this weather snapshot was fetched and processed.
     pub last_updated: DateTime<Utc>,
     /// Upcoming hourly or 3-hour forecast entries displayed in the Diagnostics forecast table.
     pub debug_forecast: Vec<ForecastItem>,
+    /// Individual and blended feed snapshots populated in Smart Blend (`"both"`) mode for
+    /// side-by-side inspection on the Diagnostics tabs.
+    #[serde(default)]
+    pub provider_feeds: Vec<ProviderFeedSnapshot>,
+}
+
+/// Individual upstream or blended feed snapshot exposed to Diagnostics Mode when Smart Blend is active.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderFeedSnapshot {
+    /// Feed key (`"blended"`, `"open-meteo"`, or `"openweathermap"`).
+    pub id: String,
+    /// Display label shown on the Diagnostics tab (`"Smart Blend"`, `"Open-Meteo"`, `"OpenWeatherMap"`).
+    pub name: String,
+    /// Effective horizon temperature in degrees Celsius for this feed.
+    pub temperature: f64,
+    /// Whether precipitation was triggered within the configured horizon on this feed.
+    pub has_precipitation: bool,
+    /// Formatted precipitation alert string for this feed, if triggered.
+    #[serde(default)]
+    pub precip_summary: Option<String>,
+    /// Upcoming forecast slots (`24 x 1h` for Smart Blend / Open-Meteo, `16 x 3h` for OpenWeatherMap).
+    pub forecast: Vec<ForecastItem>,
 }
 
 /// Single future forecast slot rendered in the Diagnostics Mode forecast table.
@@ -61,6 +86,12 @@ pub struct ForecastItem {
     pub precip_prob: f64,
     /// Dominant precipitation type label (e.g., `"Rain"`, `"Snow"`, `"Showers"`, or `"None"`).
     pub precip_type: String,
+    /// Hourly liquid precipitation rate (rain + showers) in `mm/hr` for this slot.
+    #[serde(default)]
+    pub rain_mm_hr: f64,
+    /// Hourly snowfall rate in `mm/hr` for this slot.
+    #[serde(default)]
+    pub snow_mm_hr: f64,
 }
 
 /// Automatic geolocation coordinates and city label resolved via IP lookup (`ip-api.com`).

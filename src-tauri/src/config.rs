@@ -16,7 +16,8 @@ use std::path::PathBuf;
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
-    /// Selected upstream weather API: `"open-meteo"` (default, keyless) or `"openweathermap"`.
+    /// Selected upstream weather API: `"open-meteo"` (default, keyless), `"openweathermap"`,
+    /// or `"both"` (Smart Blend combining Open-Meteo hourly + OpenWeatherMap live/3h feeds).
     pub provider: String,
     /// Display temperature unit for tray tooltips and UI labels: `"C"` or `"F"`.
     /// Note: all internal calculations and color mappings operate in Celsius.
@@ -27,7 +28,7 @@ pub struct AppConfig {
     pub auto_start: bool,
     /// User-entered city/region string used when `auto_location` is `false`.
     pub location: String,
-    /// Optional OpenWeatherMap API key (required only when `provider == "openweathermap"`).
+    /// Optional OpenWeatherMap API key (required when `provider` is `"openweathermap"` or `"both"`).
     pub api_key: String,
     /// Enables breathing pulse animation on the Busylight when precipitation is detected.
     pub pulse: bool,
@@ -63,6 +64,12 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Returns `true` when the selected provider requires an OpenWeatherMap API key
+    /// (`"openweathermap"` or `"both"`).
+    pub fn requires_api_key(&self) -> bool {
+        self.provider == "openweathermap" || self.provider == "both"
+    }
+
     /// Persists this configuration to disk as formatted JSON.
     pub fn save(&self) -> Result<(), String> {
         let path = get_config_path();
@@ -174,5 +181,17 @@ mod tests {
         assert!((cfg.format_temperature(0.0) - 32.0).abs() < f64::EPSILON);
         assert!((cfg.format_temperature(100.0) - 212.0).abs() < f64::EPSILON);
         assert!((cfg.format_temperature(20.0) - 68.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_requires_api_key() {
+        let mut cfg = AppConfig::default();
+        assert!(!cfg.requires_api_key());
+
+        cfg.provider = "openweathermap".to_string();
+        assert!(cfg.requires_api_key());
+
+        cfg.provider = "both".to_string();
+        assert!(cfg.requires_api_key());
     }
 }

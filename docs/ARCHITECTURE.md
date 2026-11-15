@@ -1,100 +1,102 @@
 # Architecture Documentation
 
 ## Overview
-**WeatherLight** is a native ambient weather visualization tool that interfaces with a **Kuando Busylight**. Rewritten from Electron to **Tauri**, it significantly reduces memory footprint and bundle size (~67MB down to ~6MB) while retaining its exact frontend design. It runs natively in the system tray, fetching local weather data and translating it into light patterns and colors.
+**WeatherLight** is a native ambient weather visualization tool that interfaces with a **Kuando Busylight**. Rewritten from Electron to **Tauri v2**, it significantly reduces memory footprint and bundle size (~67MB down to ~6MB) while running silently in the Windows system tray, fetching local weather data, and translating temperature and precipitation into continuous light patterns and a dynamic tray icon.
 
 ## System Design
 
-The application follows a **Shared State Concurrency** pattern built on top of Rust's `Arc<Mutex<T>>`.
+The Rust backend follows a **Shared State Concurrency** pattern built around `Arc<AppState>` (owned by Tauri's managed state) and dedicated background threads for weather polling and ~30 FPS HID animation.
 
 ```mermaid
 graph TD
-    User[User] -->|Interact| Tray[Native System Tray]
-    User -->|Configure| SettingsWin[Settings Window UI]
-    
-    subgraph "Rust Backend (src-tauri)"
-        AppState[Tauri AppState Mutex]
-        
-        subgraph "Modules"
-            Config[config.rs]
-            Weather[weather.rs]
-            Busylight[busylight.rs]
-            TrayModule[tray.rs]
-        end
-        
-        Tokio[Tokio Background Loop]
-        IPC[Tauri Command Handlers]
+    User[End User] -->|Interact| Tray[Native System Tray]
+    User -->|Configure / Test| SettingsWin["Settings & Diagnostics UI (src/)"]
+
+    subgraph "Rust Backend (src-tauri/src)"
+        Orchestrator[lib.rs Orchestrator & IPC Commands]
+        Color[color.rs]
+        Models[models.rs]
+        Config[config.rs]
+        Weather[weather.rs]
+        Busylight[busylight.rs]
+        TrayModule[tray.rs]
     end
 
-    subgraph "External"
+    subgraph "External Services & Hardware"
+        API_IP[ip-api.com Geolocation]
         API_OM[Open-Meteo API]
         API_OWM[OpenWeatherMap API]
-        HW_Busy[Kuando Busylight HID]
+        HW_Busy[Kuando Busylight USB HID]
     end
 
-    SettingsWin <-->|api.js / invoke| IPC
-    IPC --> AppState
-    IPC --> Config
-    IPC --> Busylight
-    
-    Tokio --> Weather
+    SettingsWin <-->|api.js / Tauri IPC & Events| Orchestrator
+    Orchestrator --> Models
+    Orchestrator --> Config
+    Orchestrator --> Color
+    Orchestrator --> Weather
+    Orchestrator --> TrayModule
+    Orchestrator --> Busylight
+
+    Weather -->|reqwest| API_IP
     Weather -->|reqwest| API_OM
     Weather -->|reqwest| API_OWM
-    
-    Tokio --> AppState
-    Tokio --> TrayModule
+
     TrayModule -->|image crate| Tray
-    
-    Tokio --> Busylight
     Busylight -->|hidapi| HW_Busy
 ```
 
-## Key Components
+## Module Breakdown
 
-### 1. `lib.rs` (The Orchestrator)
-The central initialization layer.
-- **Lifecycle**: Sets up the Tauri application builder, registers plugins (autostart, single-instance). Intercepts `RunEvent::ExitRequested` to keep the app alive silently in the background when windows are closed.
-- **Background Loop**: Spawns an async `Tokio` thread that executes immediately (`first_run` flag) and then queries the `weather_svc` every 15 minutes, pushing results into the `AppState`, the `Tray`, and the `Busylight` controller.
-- **State Management**: Hosts the `AppState` struct (Mutex-wrapped configuration, hardware controllers). Gracefully handles missing `hidapi` hardware without panicking.
-- **IPC Interface**: Exposes `#[tauri::command]` functions connected to the frontend (`get_settings`, `apply_manual_state`, `detect_location`, etc).
+### Backend (`src-tauri/src/`)
 
-### 2. `busylight.rs` (Hardware Abstraction)
-- Wraps the `hidapi` crate to execute low-level byte array transmissions to the USB interface.
-- Includes a dedicated pulsing thread tracking a shared `PulseState` inside an `Arc<Mutex>`, avoiding blocking the main event loops during soft continuous lighting animations.
+1. **`lib.rs` (Application Orchestrator & IPC Bridge)**
+   - **Lifecycle**: Configures Tauri plugins (`single-instance`, `autostart`, `opener`), intercepts `WindowEvent::CloseRequested` and `RunEvent::ExitRequested` so closing the Settings window hides to the system tray instead of quitting.
+   - **Background Scheduler**: Spawns a Tokio task that runs `update_weather_pipeline` immediately at startup and every 15 minutes (`WEATHER_POLL_INTERVAL`), plus on demand when triggered by `"refresh_weather"` or `set_settings`.
+   - **IPC Commands**: Exposes 12 `#[tauri::command]` handlers (`get_settings`, `set_settings`, `close_settings`, `detect_location`, `validate_location`, `get_weather_state`, `get_device_info`, `get_busylight_status`, `set_manual_mode`, `apply_manual_state`, `open_external`, `resize_settings`) and emits `"busylight-status"` events whenever hardware status is evaluated.
+   - **Formatting & Control Helpers**: `format_tray_tooltip` (converts internal Celsius to `"C"` or `"F"`, normalizes `-0.0`, and appends `(Precip)` / `(Night)`) and `apply_lighting_target`.
 
-### 3. `weather.rs` (Network Logic)
-- Built around the `reqwest` crate pointing to Open-Meteo or OpenWeatherMap endpoints.
-- Calculates sunrise/sunset locally using geometry, establishing the `isNight` flag.
-- Normalizes data into a generic `WeatherState` struct compatible with both APIs.
+2. **`color.rs` (Color Scale & Hex Parsing)**
+   - Owns the canonical 121-stop `COLOR_SCALE` (`-50.0°C` to `+70.0°C`), `calculate_weather_color` (linear per-channel interpolation with `.round()` clamping), `hex_to_rgb`, and `hex_to_rgba`.
+   - Shared single source of truth for both `BusylightController` lighting output and `tray.rs` icon rendering.
 
-### 4. `tray.rs` (Dynamic Icon & Autostart)
-- Since Tauri does not easily support headless WebViews for `<canvas>` generation, the dynamic tray icon is algorithmically drawn using the Rust `image` crate.
-- `update_tray_icon`: Manipulates RGBA buffers to draw solid or night-dimmed circular vectors based directly on the provided weather Hex color.
-- **Menu Behavior**: Controls the OS Autostart registry. Modifying the Autostart checkbox clones the active state, updates `$APPDATA/config.json`, and updates the registry simultaneously to prevent desynchronization upon reboot. To explicitly kill the application, the Tray `Quit` button invokes a hard `std::process::exit(0)` bypass route.
+3. **`models.rs` (Shared IPC DTOs)**
+   - Defines `SunTimes`, `WeatherState`, `ForecastItem`, `LocationDetectResult`, `LocationValidationResult`, `DeviceInfoResult`, and `ManualState`.
+   - Uses `#[serde(rename_all = "camelCase")]` on multi-word structs to align 1:1 with JavaScript property names.
 
-### 5. `config.rs`
-- Strict typing of the application settings using `serde`.
-- Reads and writes to the system's AppData (`$APPDATA/WeatherLight/config.json`).
-- Handles alias mapping for JavaScript configuration variables (e.g., `#[serde(rename = "autoLocation")]`).
+4. **`config.rs` (Persistent Configuration)**
+   - Manages `AppConfig` serialized to `<DATA_DIR>/WeatherLight/config.json` (`%APPDATA%\WeatherLight\config.json` on Windows) with `#[serde(rename_all = "camelCase", default)]`.
+   - Provides `load_config`, `save_config`, `get_config_path`, and `AppConfig::format_temperature`.
+
+5. **`busylight.rs` (USB HID Driver & Smooth Pulse Engine)**
+   - Drives Plenom/Kuando Omega/Alpha devices (`VID 0x27bb`, 65-byte report with 16-bit big-endian checksum) and legacy Microchip UC devices (`VID 0x04d8`, 9-byte report) directly over `hidapi`.
+   - Spawns a dedicated `std::thread` polling `PulseState` at ~30 FPS (`compute_pulse_frame`), isolated from async weather requests.
+   - Applies a `1.5` perceptual brightness exponent (`BRIGHTNESS_GAMMA`) with rounded 8-bit scaling (`scale_color_with_power`) and a hue-preserving dynamic floor (`compute_pulse_power_bounds`, targeting `MIN_ACTIVE_CHANNEL_FLOOR = 7.0` capped at `MAX_FLOOR_POWER_RATIO = 0.55` of peak power) so secondary color channels fade smoothly without hitting low-end hardware PWM cutoff.
+   - Deduplicates identical consecutive `(r, g, b)` USB HID frames at peaks/troughs while honoring a 20-second keep-alive interval (`KEEPALIVE_INTERVAL`) so the hardware watchdog never resets or times out.
+
+6. **`weather.rs` (Weather Providers, Geocoding & Horizons)**
+   - Wraps `reqwest::Client` (10-second timeout) for IP geolocation (`ip-api.com`), free-form location geocoding (Open-Meteo and OpenWeatherMap), and weather feeds.
+   - Parses upstream sunrise/sunset timestamps into UTC and determines `is_night` via `check_is_night_at` (handling both standard UTC ordering and wrapped UTC midnight intervals such as NZ/AU).
+   - Evaluates configurable temperature high horizons (`current`, `short_high`, `today_high`, `day_high`) and precipitation horizons (`none`, `immediate`, `short`, `today`, `day` via `is_precip_triggered`), producing a normalized `WeatherState` and 24h/48h `debug_forecast`.
+
+7. **`tray.rs` (System Tray & Dynamic Swatch Icon)**
+   - Builds the system tray menu (`Refresh`, `Settings`, `Start with Windows`, `Quit`) via Tauri's tray API. Note that `Quit` calls `std::process::exit(0)` to bypass exit prevention.
+   - Syncs OS autostart changes back to `AppConfig` and `config.json`.
+   - Generates a 16x16 RGBA swatch (`render_tray_icon_rgba`) with 2px rounded-corner transparency; when Night Mode is active, paints the upper half black with 5 white stars (`NIGHT_STAR_COORDS`).
+
+### Frontend (`src/`)
+- **`src/api.js`**: Clean JSDoc-documented `window.api` facade over Tauri's `invoke` and `listen`.
+- **`src/settings.html` / `src/settings.js`**: Vanilla HTML/CSS/JS controller structured into 5 sections (DOM Registry, Auto-Resize/Hydration, Location/Settings Handlers, Hardware Status/External Links, Diagnostics Mode). Uses a single `ResizeObserver` so the native window dynamically matches content height and preserves background flags like `autoStart` when saving.
 
 ## Data Flow
 
-1.  **Initialization**: Tauri `setup()` hook runs, loading settings and seeding the `AppState`.
-2.  **Weather Fetch Interval**: The `Tokio` loop ticks every 15 minutes.
-    - Determines which API provider to hit (Open-Meteo / OWM).
-    - Dispatches async GET request.
-3.  **Update Cycle**:
-    - Generates string tooltip based on current temperature bounds and units (`C / F`).
-    - Pushes tooltip to `tray.rs`.
-    - Generates color hex map (`#FF0000`, etc). Draws the tray image byte vector and flushes it to the OS.
-    - Triggers the `BusylightController` (unless diagnostic manual mode is enabled).
-4. **Auto-Detect Process**:
-    - Clicking the detect location link invokes `detect_location`.
-    - Backend queries `http://ip-api.com/json` and returns the structured `LocationDetectResult` straight into the UI bindings.
+1. **Initialization**: `setup()` loads `AppConfig`, initializes `BusylightController` and `WeatherService`, reconciles OS autostart state, registers the tray icon, and starts the 15-minute scheduler.
+2. **Weather Update (`update_weather_pipeline`)**:
+   - Validates location/API key readiness (`WeatherLight - Setup Required` if incomplete).
+   - Fetches normalized `WeatherState` from Open-Meteo or OpenWeatherMap.
+   - Formats display-unit tray tooltip (`°C`/`°F`) and regenerates the 16x16 tray icon.
+   - Unless Diagnostics `manual_mode` is active, turns off the LED during night mode (`config.sunset_sunrise && weather.is_night`) or drives either `set_pulse` (when `weather.has_precipitation && config.pulse`) or `set_solid_pct`.
+   - Emits `"busylight-status"` so any open Settings UI reflects current hardware connectivity.
 
-## Build Pipeline
-
-The shift to Tauri leverages Rust's native compilation target:
-- **Command**: `npm run tauri build` or `cargo tauri build`.
-- Generates a standalone MSI or NSIS `.exe` installer.
-- Release target includes aggressive size optimization options in `Cargo.toml`. Instead of packaging an entire Chromium instance, it relies on the host OS Webview system (WebView2 on Windows). Size is heavily reduced from \~67MB to just **~6MB**.
+## Build & Test Pipeline
+- **Unit Tests**: Run `cargo test` inside `src-tauri/` to verify color interpolation, config serialization/conversion, pulse curves/bounds, weather horizons/night logic, tray RGBA rendering, and tooltip formatting without physical USB hardware.
+- **Release Binary**: Run `npm run tauri build` (or `cargo build --release` in `src-tauri/`) with `Cargo.toml` LTO/size optimizations to produce the standalone portable Windows binary at `src-tauri/target/release/weatherlight.exe` (~6MB, relies on host WebView2).

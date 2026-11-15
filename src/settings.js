@@ -1,600 +1,604 @@
 /**
- * @fileoverview Logic for the settings window.
+ * @fileoverview Controller logic for the WeatherLight Settings & Diagnostics window.
+ *
+ * Organized into five clean responsibilities:
+ * 1. Initialization & DOM element registry
+ * 2. Window auto-sizing (`ResizeObserver`) & UI state synchronization
+ * 3. Location auto-detection & manual validation
+ * 4. Hardware status updates & external link handling
+ * 5. Diagnostics Mode (feed inspection + live manual Busylight testing)
  */
+
+/** Periodic UI refresh cadence (10 seconds) for sunrise/sunset & hardware status. */
+const STATUS_POLL_INTERVAL_MS = 10_000;
+
+/** Initial hardware polling retry window capped height ratio against screen height. */
+const MAX_WINDOW_HEIGHT_RATIO = 0.9;
+
+/** Diagnostics manual test speed (quick 1.5s cycle so pulsing is immediately verifiable). */
+const MANUAL_TEST_PULSE_SPEED_MS = 1500;
+
+/** @type {Record<string, HTMLElement | null>} Cached DOM node references initialized on load. */
+let dom = {};
+
+/** Pending debounce timer for window auto-resize calculations. */
+let resizeTimeout = null;
 
 document.addEventListener('DOMContentLoaded', () => {
     initializeApp();
 });
 
-let providerSelect, apiKeyContainer, apiKeyInput,
-    autoLocationInput, locationInput, locationStatus,
-    pulseInput, pulseSpeedContainer, pulseSpeedInput, pulseSpeedValue,
-    maxBrightnessInput, maxBrightnessValue, sunsetSunriseInput,
-    tempHorizonSelect, precipHorizonSelect,
-    saveButton, closeButton;
+// =============================================================================
+// 1. Initialization & DOM Registry
+// =============================================================================
 
-// Move initialization into a function
+/**
+ * Collects DOM references once, attaches event handlers, configures window auto-resize,
+ * and hydrates initial configuration, weather metadata, and hardware connection state.
+ */
 function initializeApp() {
-    providerSelect = document.getElementById('provider');
-    apiKeyContainer = document.getElementById('apiKeyContainer');
-    apiKeyInput = document.getElementById('apiKey');
+    dom = {
+        container: document.querySelector('.container'),
+        mainSettings: document.getElementById('mainSettings'),
+        diagnosticsView: document.getElementById('diagnosticsView'),
 
-    autoLocationInput = document.getElementById('autoLocation');
-    locationInput = document.getElementById('location');
-    locationStatus = document.getElementById('location-status');
+        // Weather provider & API key
+        provider: document.getElementById('provider'),
+        apiKeyContainer: document.getElementById('apiKeyContainer'),
+        apiKeyHelpIcon: document.getElementById('apiKeyHelpIcon'),
+        apiKeyHelp: document.getElementById('apiKeyHelp'),
+        apiKey: document.getElementById('apiKey'),
 
-    locationInput = document.getElementById('location');
-    locationStatus = document.getElementById('location-status');
+        // Location & units
+        autoLocation: document.getElementById('autoLocation'),
+        location: document.getElementById('location'),
+        locationStatus: document.getElementById('location-status'),
 
-    pulseSpeedContainer = document.getElementById('pulse-speed-container');
-    pulseSpeedInput = document.getElementById('pulseSpeed');
-    pulseSpeedValue = document.getElementById('pulseSpeedValue');
-    maxBrightnessInput = document.getElementById('maxBrightness');
-    maxBrightnessValue = document.getElementById('maxBrightnessValue');
-    sunsetSunriseInput = document.getElementById('sunsetSunrise');
+        // Horizons, pulse & brightness
+        tempHorizon: document.getElementById('tempHorizon'),
+        precipHorizon: document.getElementById('precipHorizon'),
+        pulseSpeedContainer: document.getElementById('pulse-speed-container'),
+        pulseSpeed: document.getElementById('pulseSpeed'),
+        pulseSpeedValue: document.getElementById('pulseSpeedValue'),
+        maxBrightness: document.getElementById('maxBrightness'),
+        maxBrightnessValue: document.getElementById('maxBrightnessValue'),
+        sunsetSunrise: document.getElementById('sunsetSunrise'),
+        sunTimes: document.getElementById('sunTimes'),
 
-    // Temp/Precip Horizon Logic (Select Dropdowns)
-    tempHorizonSelect = document.getElementById('tempHorizon');
-    precipHorizonSelect = document.getElementById('precipHorizon');
+        // Footer & actions
+        deviceWarning: document.getElementById('device-warning'),
+        connectionStatus: document.getElementById('connection-status'),
+        saveButton: document.getElementById('save'),
+        closeButton: document.getElementById('close'),
 
-    // ...
+        // External links
+        owmLink: document.getElementById('owmLink'),
+        openMeteoLink: document.getElementById('openMeteoLink'),
+        busylightLink: document.getElementById('busylightLink'),
+        openDiagnostics: document.getElementById('openDiagnostics'),
 
-    saveButton = document.getElementById('save');
-    closeButton = document.getElementById('close');
+        // Diagnostics controls
+        diagDeviceInfo: document.getElementById('diag-device-info'),
+        diagWeatherInfo: document.getElementById('diag-weather-info'),
+        diagForecastTable: document.getElementById('diag-forecast-table'),
+        diagManualMode: document.getElementById('diag-manual-mode'),
+        diagControls: document.getElementById('diag-controls'),
+        diagTemp: document.getElementById('diag-temp'),
+        diagTempValue: document.getElementById('diag-temp-value'),
+        diagPulse: document.getElementById('diag-pulse'),
+        diagClose: document.getElementById('diag-close'),
+    };
 
-    // Attach Listeners
-    attachListeners();
-
-    // Start Logic
-    startAsyncLogic();
+    setupWindowAutoResize();
+    attachSettingsListeners();
+    attachExternalLinkListeners();
+    attachDiagnosticsListeners();
+    hydrateInitialState();
 }
 
-// --- Helper Functions ---
+// =============================================================================
+// 2. Window Auto-Sizing & UI State Synchronization
+// =============================================================================
 
-function setStatus(text, color) {
-    locationStatus.textContent = text;
-    locationStatus.style.color = color;
-}
+/**
+ * Measures intrinsic content height (card container + body vertical padding) and asks Tauri
+ * to resize the Settings window cleanly. Avoids `document.documentElement.scrollHeight`,
+ * which is clamped to `>= window.innerHeight` and prevents shrinking after Diagnostics closes.
+ */
+function syncWindowSize() {
+    if (resizeTimeout) clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+        const container = dom.container || document.querySelector('.container');
+        if (!container) return;
 
-async function detectAndPopulateLocation() {
-    locationInput.placeholder = "Detecting location...";
-    locationInput.value = "Detecting location...";
-    setStatus('Detecting location...', '#666');
+        const bodyStyle = window.getComputedStyle(document.body);
+        const verticalPadding =
+            (parseFloat(bodyStyle.paddingTop) || 20) +
+            (parseFloat(bodyStyle.paddingBottom) || 20);
+        const contentHeight = Math.ceil(
+            container.getBoundingClientRect().height + verticalPadding
+        );
+        const maxHeight = Math.floor(window.screen.availHeight * MAX_WINDOW_HEIGHT_RATIO);
+        const optimalHeight = Math.min(contentHeight, maxHeight);
 
-    try {
-        const detected = await window.api.detectLocation();
-        if (detected && detected.city) {
-            locationInput.value = `${detected.city}, ${detected.country}`;
-            setStatus('✔ Location detected', '#28a745');
-        } else {
-            locationInput.value = "";
-            setStatus('Could not detect location', 'red');
+        if (window.api && window.api.resizeSettings) {
+            window.api.resizeSettings(optimalHeight);
         }
-    } catch (e) {
-        console.error(e);
-        locationInput.value = "";
-        setStatus('Detection failed', 'red');
-    }
+    }, 10);
 }
 
-async function updateUIState() {
-    // 1. Provider logic
-    const isOWM = providerSelect.value === 'openweathermap';
-    apiKeyContainer.style.display = isOWM ? 'block' : 'none';
+/**
+ * Attaches a single `ResizeObserver` to `.container` (with `document.body` fallback) so Tauri
+ * dynamically shrinks or grows the Settings window whenever sections or views change height.
+ */
+function setupWindowAutoResize() {
+    const targetNode = dom.container || document.body;
+    if (!targetNode) return;
 
-    // 2. Pulse logic
-    const precipHorizonVal = precipHorizonSelect.value || 'none';
-    const isPulse = precipHorizonVal !== 'none';
-    pulseSpeedContainer.style.display = isPulse ? 'block' : 'none';
+    const resizeObserver = new ResizeObserver(() => {
+        syncWindowSize();
+    });
 
-    // 3. Auto-Location logic
-    const isAuto = autoLocationInput.checked;
-    locationInput.disabled = isAuto;
+    resizeObserver.observe(targetNode);
+}
+
+/**
+ * Synchronizes conditional form visibility and disabled states with current control values.
+ */
+function updateUIState() {
+    const isOWM = dom.provider.value === 'openweathermap';
+    dom.apiKeyContainer.style.display = isOWM ? 'block' : 'none';
+
+    const precipHorizonVal = dom.precipHorizon.value || 'none';
+    dom.pulseSpeedContainer.style.display = precipHorizonVal !== 'none' ? 'block' : 'none';
+
+    const isAuto = dom.autoLocation.checked;
+    dom.location.disabled = isAuto;
 
     if (isAuto) {
-        locationInput.placeholder = "Auto-detecting...";
+        dom.location.placeholder = 'Auto-detecting...';
     } else {
-        locationInput.placeholder = "City, Country";
-        if (locationInput.value === "Detecting location...") {
-            locationInput.value = "";
+        dom.location.placeholder = 'City, Country';
+        if (dom.location.value === 'Detecting location...') {
+            dom.location.value = '';
         }
     }
 
-    // Initialize ResizeObserver to handle dynamic content changes
-    const targetNode = document.documentElement;
-    if (targetNode) {
-        const resizeObserver = new ResizeObserver(entries => {
-            // Give the DOM a tiny bit of time to reflow
-            setTimeout(() => {
-                const height = document.documentElement.scrollHeight;
-                let targetHeight = height + window.outerHeight - window.innerHeight; // Add OS chrome delta if needed, or rely on Tauri
-
-                // Tauri webview inner height logic
-                let optimalHeight = height;
-                let maxHeight = Math.floor(window.screen.availHeight * 0.90);
-                if (optimalHeight > maxHeight) optimalHeight = maxHeight;
-
-                if (window.api && window.api.resizeSettings) {
-                    window.api.resizeSettings(optimalHeight);
-                }
-            }, 10);
-        });
-        resizeObserver.observe(targetNode);
-    }
+    syncWindowSize();
 }
 
-function updateWindowSize() {
-    // Legacy bridge that triggered logic
-}
+/**
+ * Hydrates form values from persisted backend configuration and initializes background pollers.
+ */
+async function hydrateInitialState() {
+    const [settings, weather, isConnected] = await Promise.all([
+        window.api.getSettings(),
+        window.api.getWeatherState(),
+        window.api.getBusylightStatus(),
+    ]);
 
-// ... existing code ...
+    dom.provider.value = settings.provider || 'open-meteo';
 
-async function loadDiagnostics() {
-    diagDeviceInfo.textContent = 'Loading...';
-    try {
-        const info = await window.api.getDeviceInfo();
-        if (info) {
-            diagDeviceInfo.innerHTML = `
-                        <strong>Product:</strong> ${info.product}<br>
-                        <strong>Path:</strong> ${info.path}<br>
-                        <strong>VendorID:</strong> ${info.vendorId} (0x${info.vendorId.toString(16)})<br>
-                        <strong>ProductID:</strong> ${info.productId} (0x${info.productId.toString(16)})
-                    `;
-        } else {
-            diagDeviceInfo.textContent = 'No Busylight device connected.';
-        }
-    } catch (e) {
-        diagDeviceInfo.textContent = 'Error fetching device info.';
-        console.error(e);
-    }
-
-    // Resize after device info loads
-    updateWindowSize();
-
-    // Load Weather Feed Info
-    const weatherDiv = document.getElementById('diag-weather-info');
-    if (weatherDiv) {
-        weatherDiv.textContent = 'Fetching weather data...';
-        try {
-            const weather = await window.api.getWeatherState();
-            if (weather) {
-                const updated = weather.lastUpdated ? new Date(weather.lastUpdated).toLocaleString() : 'Unknown';
-                const precip = weather.hasPrecipitation ? 'Yes' : 'No';
-                const night = weather.isNight ? 'Yes' : 'No';
-
-                weatherDiv.innerHTML = `
-                        <strong>Provider:</strong> ${weather.provider || 'Unknown'}<br>
-                        <strong>Location:</strong> ${weather.locationName || 'Unknown'}<br>
-                        <strong>Temperature:</strong> ${weather.temperature}°C<br>
-                        <strong>Precipitation:</strong> ${precip}<br>
-                        <strong>Night Mode:</strong> ${night}<br>
-                        <strong>Last Updated:</strong> ${updated}
-                    `;
-
-                // Populate Table
-                const tableBody = document.getElementById('diag-forecast-table');
-                if (tableBody && weather.debugForecast) {
-                    tableBody.innerHTML = weather.debugForecast.map(item => `
-                            <tr style="border-bottom: 1px solid #eee;">
-                                <td style="padding: 4px;">${new Date(item.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                                <td style="padding: 4px;">${item.temp.toFixed(1)}°</td>
-                                <td style="padding: 4px;">${Math.round(item.precipProb)}%</td>
-                                <td style="padding: 4px;">${item.precipType}</td>
-                            </tr>
-                        `).join('');
-                }
-
-            } else {
-                weatherDiv.textContent = 'No weather data available yet.';
-            }
-        } catch (e) {
-            weatherDiv.textContent = 'Error fetching weather data.';
-            console.error(e);
-        }
-    }
-
-    // Resize after weather data (and table) loads
-    updateWindowSize();
-}
-function updateHardwareStatus(connected) {
-    const statusDiv = document.getElementById('connection-status');
-
-    // Update footer text/icon
-    if (connected) {
-        statusDiv.innerHTML = '<span class="connection-indicator connected"></span> Hardware Connected';
-    } else {
-        statusDiv.innerHTML = '<span class="connection-indicator disconnected"></span> Hardware Disconnected';
-    }
-
-    // Disable/Enable Busylight-specific controls
-    // tempHorizon remains active (affects Tray Icon)
-    const hardwareInputs = [
-        precipHorizonSelect,
-        pulseSpeedInput,
-        maxBrightnessInput,
-        sunsetSunriseInput
-    ];
-
-    const warning = document.getElementById('device-warning');
-
-    if (connected) {
-        if (warning) warning.style.display = 'none';
-        hardwareInputs.forEach(el => {
-            el.disabled = false;
-            // Restore visual opacity if we dimmed parent containers? 
-            // Simplified: just rely on native disabled appearance or handle parents
-            const wrapper = el.closest('.setting') || el.closest('.select-wrapper');
-            if (wrapper) wrapper.style.opacity = '1';
-        });
-
-        // Specific handling for precip container which is inside a flex box
-        if (precipHorizonSelect) {
-            const wrapper = precipHorizonSelect.closest('.select-wrapper').parentElement; // The div with label
-            if (wrapper) wrapper.style.opacity = '1';
-        }
-
-    } else {
-        if (warning) warning.style.display = 'block';
-        hardwareInputs.forEach(el => {
-            el.disabled = true;
-            // Optional: Dim the containers for better visual cue
-            const wrapper = el.closest('.setting');
-            if (wrapper) wrapper.style.opacity = '0.5';
-        });
-
-        // Specific handling for precip container
-        if (precipHorizonSelect) {
-            const wrapper = precipHorizonSelect.closest('.select-wrapper').parentElement;
-            if (wrapper) wrapper.style.opacity = '0.5';
-        }
-    }
-
-    // Ensure window resizes to fit warning banner
-    setTimeout(updateWindowSize, 50);
-
-    // Diagnostics Manual Mode Handling
-    const diagManualMode = document.getElementById('diag-manual-mode');
-    const diagControls = document.getElementById('diag-controls');
-
-    if (diagManualMode) {
-        if (connected) {
-            diagManualMode.disabled = false;
-            // Restore opacity
-            if (diagManualMode.parentElement) diagManualMode.parentElement.style.opacity = '1';
-        } else {
-            diagManualMode.disabled = true;
-            // If it was checked, uncheck it and update UI/Backend
-            if (diagManualMode.checked) {
-                diagManualMode.checked = false;
-                window.api.setManualMode(false);
-            }
-            // Dim the container
-            if (diagManualMode.parentElement) diagManualMode.parentElement.style.opacity = '0.5';
-
-            // Ensure controls are visually disabled
-            if (diagControls) {
-                diagControls.style.opacity = '0.5';
-                diagControls.style.pointerEvents = 'none';
-            }
-        }
-    }
-}
-
-async function validateLocation() {
-    const loc = locationInput.value.trim();
-    if (autoLocationInput.checked || !loc || loc === "Detecting location...") return;
-
-    setStatus('Validating...', '#666');
-
-    const result = await window.api.validateLocation(loc);
-
-    if (result.valid) {
-        locationInput.value = result.name;
-        setStatus('✔ Location OK', '#28a745');
-    } else {
-        setStatus(`✖ Location not found; please use this format: City, Country`, '#dc3545');
-    }
-}
-
-function attachListeners() {
-    providerSelect.addEventListener('change', updateUIState);
-
-    autoLocationInput.addEventListener('change', (e) => {
-        updateUIState();
-        if (autoLocationInput.checked) {
-            detectAndPopulateLocation();
-        }
-    });
-
-    locationInput.addEventListener('blur', validateLocation);
-    locationInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') validateLocation();
-    });
-
-    // Listener for precip horizon select
-    precipHorizonSelect.addEventListener('change', updateUIState);
-
-    pulseSpeedInput.addEventListener('input', () => {
-        pulseSpeedValue.textContent = `${parseFloat(pulseSpeedInput.value).toFixed(1)}s`;
-    });
-
-    maxBrightnessInput.addEventListener('input', () => {
-        maxBrightnessValue.textContent = `${maxBrightnessInput.value}%`;
-    });
-
-    saveButton.addEventListener('click', () => {
-        const settings = {
-            provider: providerSelect.value,
-            unit: document.querySelector('input[name="unit"]:checked').value,
-            autoLocation: autoLocationInput.checked,
-            location: locationInput.value.trim(),
-            apiKey: apiKeyInput.value.trim(),
-            // Pulse is enabled if precipHorizon is NOT 'none'
-            pulse: precipHorizonSelect.value !== 'none',
-            pulseSpeed: Math.round(parseFloat(pulseSpeedInput.value) * 1000),
-            maxBrightness: parseInt(maxBrightnessInput.value, 10),
-            sunsetSunrise: sunsetSunriseInput.checked,
-            tempHorizon: tempHorizonSelect.value,
-            precipHorizon: precipHorizonSelect.value
-        };
-        window.api.saveSettings(settings);
-        window.api.closeSettings();
-    });
-
-    closeButton.addEventListener('click', () => {
-        window.api.closeSettings();
-    });
-}
-
-// ...
-
-async function startAsyncLogic() {
-    const settings = await window.api.getSettings();
-    const weather = await window.api.getWeatherState();
-
-    // Start background weather UI poller
-    updateSunTimes();
-    setInterval(updateSunTimes, 10000);
-
-    // Set values
-    providerSelect.value = settings.provider || 'open-meteo';
-
-    // Set Unit Radio
     const unitVal = settings.unit || 'C';
     const unitRadio = document.querySelector(`input[name="unit"][value="${unitVal}"]`);
     if (unitRadio) unitRadio.checked = true;
 
-    autoLocationInput.checked = settings.autoLocation || false;
+    dom.autoLocation.checked = Boolean(settings.autoLocation);
+    dom.apiKey.value = settings.apiKey || '';
 
-    // API Key
-    apiKeyInput.value = settings.apiKey || '';
-
-    // Location
     if (settings.autoLocation) {
-        if (weather && weather.locationName) {
-            locationInput.value = weather.locationName;
-        } else {
-            locationInput.value = "Detecting location...";
-        }
+        dom.location.value =
+            weather && weather.locationName ? weather.locationName : 'Detecting location...';
     } else {
-        locationInput.value = settings.location || '';
+        dom.location.value = settings.location || '';
     }
 
-    // Pulse state is now derived from horizon
-    pulseSpeedContainer.style.display = settings.pulse ? 'block' : 'none';
+    dom.pulseSpeed.value = (settings.pulseSpeed || 5000) / 1000;
+    dom.pulseSpeedValue.textContent = `${parseFloat(dom.pulseSpeed.value).toFixed(1)}s`;
 
-    pulseSpeedInput.value = (settings.pulseSpeed || 5000) / 1000;
-    pulseSpeedValue.textContent = `${parseFloat(pulseSpeedInput.value).toFixed(1)}s`;
+    dom.maxBrightness.value = settings.maxBrightness ?? 60;
+    dom.maxBrightnessValue.textContent = `${dom.maxBrightness.value}%`;
 
-    maxBrightnessInput.value = settings.maxBrightness || 60;
-    maxBrightnessValue.textContent = `${maxBrightnessInput.value}%`;
-
-    sunsetSunriseInput.checked = settings.sunsetSunrise || false;
-
-    // Set Select Values
-    tempHorizonSelect.value = settings.tempHorizon || 'current';
-    precipHorizonSelect.value = settings.precipHorizon || 'immediate';
-
-    // ...
-
-    // The sunTimesDiv is now updated asynchronously via updateSunTimes()
-
-    // Help Bubble Logic
-    const helpIcon = document.getElementById('apiKeyHelpIcon');
-    const helpBox = document.getElementById('apiKeyHelp');
-    const owmLink = document.getElementById('owmLink');
-    const openMeteoLink = document.getElementById('openMeteoLink');
-    const busylightLink = document.getElementById('busylightLink');
-
-    helpIcon.addEventListener('click', (e) => {
-        e.preventDefault();
-        helpBox.style.display = helpBox.style.display === 'block' ? 'none' : 'block';
-        updateWindowSize();
-    });
-
-    owmLink.addEventListener('click', (e) => {
-        e.preventDefault();
-        window.api.openExternal('https://openweathermap.org');
-    });
-
-    if (openMeteoLink) {
-        openMeteoLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            window.api.openExternal('https://open-meteo.com/');
-        });
-    }
-
-    if (busylightLink) {
-        busylightLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            window.api.openExternal('https://busylight.com/');
-        });
-    }
+    dom.sunsetSunrise.checked = Boolean(settings.sunsetSunrise);
+    dom.tempHorizon.value = settings.tempHorizon || 'current';
+    dom.precipHorizon.value = settings.precipHorizon || 'immediate';
 
     updateUIState();
-
-    // Initial Hardware Status
-    const isConnected = await window.api.getBusylightStatus();
     updateHardwareStatus(isConnected);
+    updateSunTimes();
 
-    // Listen for hardware changes
+    // Keep live sunset/sunrise display and hardware status updated while window stays open.
+    setInterval(async () => {
+        await updateSunTimes();
+        const connected = await window.api.getBusylightStatus();
+        updateHardwareStatus(connected);
+    }, STATUS_POLL_INTERVAL_MS);
+
     window.api.onBusylightStatus((connected) => {
         updateHardwareStatus(connected);
     });
+}
 
-    // --- Diagnostics Mode Logic ---
+// =============================================================================
+// 3. Location Detection & Validation + Settings Form Handlers
+// =============================================================================
 
-    const mainSettings = document.getElementById('mainSettings');
-    const diagnosticsView = document.getElementById('diagnosticsView');
-    const openDiagnosticsLink = document.getElementById('openDiagnostics');
+/**
+ * Updates the inline validation hint beneath the location field.
+ * @param {string} text Status message.
+ * @param {string} color CSS color value.
+ */
+function setLocationStatus(text, color) {
+    dom.locationStatus.textContent = text;
+    dom.locationStatus.style.color = color;
+}
 
-    const diagDeviceInfo = document.getElementById('diag-device-info');
-    const diagManualMode = document.getElementById('diag-manual-mode');
-    const diagControls = document.getElementById('diag-controls');
-    const diagTemp = document.getElementById('diag-temp');
-    const diagTempValue = document.getElementById('diag-temp-value');
-    const diagPulse = document.getElementById('diag-pulse');
-    const diagClose = document.getElementById('diag-close');
+/**
+ * Queries the backend IP geolocation service and populates the disabled location preview.
+ */
+async function detectAndPopulateLocation() {
+    dom.location.placeholder = 'Detecting location...';
+    dom.location.value = 'Detecting location...';
+    setLocationStatus('Detecting location...', '#666');
 
-    function toggleDiagnostics(show) {
-        if (show) {
-            mainSettings.style.display = 'none';
-            diagnosticsView.style.display = 'block';
-            loadDiagnostics();
-            diagTemp.dispatchEvent(new Event('input'));
+    try {
+        const detected = await window.api.detectLocation();
+        if (detected && detected.city) {
+            dom.location.value = `${detected.city}, ${detected.country}`;
+            setLocationStatus('✔ Location detected', '#28a745');
         } else {
-            diagnosticsView.style.display = 'none';
-            mainSettings.style.display = 'block';
-            // Disable manual mode when closing
-            diagManualMode.checked = false;
-            updateManualModeUI();
-            window.api.setManualMode(false);
+            dom.location.value = '';
+            setLocationStatus('Could not detect location', 'red');
         }
+    } catch (e) {
+        console.error(e);
+        dom.location.value = '';
+        setLocationStatus('Detection failed', 'red');
+    }
+}
+
+/**
+ * Validates the user-typed location string against Open-Meteo geocoding.
+ */
+async function validateLocationInput() {
+    const loc = dom.location.value.trim();
+    if (dom.autoLocation.checked || !loc || loc === 'Detecting location...') return;
+
+    setLocationStatus('Validating...', '#666');
+
+    const result = await window.api.validateLocation(loc);
+    if (result.valid) {
+        dom.location.value = result.name;
+        setLocationStatus('✔ Location OK', '#28a745');
+    } else {
+        setLocationStatus('✖ Location not found; please use this format: City, Country', '#dc3545');
+    }
+}
+
+/**
+ * Registers event listeners for configuration form inputs, save, and cancel buttons.
+ */
+function attachSettingsListeners() {
+    dom.provider.addEventListener('change', updateUIState);
+
+    dom.autoLocation.addEventListener('change', () => {
+        updateUIState();
+        if (dom.autoLocation.checked) {
+            detectAndPopulateLocation();
+        }
+    });
+
+    dom.location.addEventListener('blur', validateLocationInput);
+    dom.location.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') validateLocationInput();
+    });
+
+    dom.precipHorizon.addEventListener('change', updateUIState);
+
+    dom.pulseSpeed.addEventListener('input', () => {
+        dom.pulseSpeedValue.textContent = `${parseFloat(dom.pulseSpeed.value).toFixed(1)}s`;
+    });
+
+    dom.maxBrightness.addEventListener('input', () => {
+        dom.maxBrightnessValue.textContent = `${dom.maxBrightness.value}%`;
+    });
+
+    dom.apiKeyHelpIcon.addEventListener('click', (e) => {
+        e.preventDefault();
+        const isShown = dom.apiKeyHelp.style.display === 'block';
+        dom.apiKeyHelp.style.display = isShown ? 'none' : 'block';
+        syncWindowSize();
+    });
+
+    dom.saveButton.addEventListener('click', async () => {
+        // Merge onto latest backend config so tray-controlled flags like `autoStart` are preserved.
+        const latestSettings = await window.api.getSettings();
+        const settings = {
+            ...latestSettings,
+            provider: dom.provider.value,
+            unit: document.querySelector('input[name="unit"]:checked').value,
+            autoLocation: dom.autoLocation.checked,
+            location: dom.location.value.trim(),
+            apiKey: dom.apiKey.value.trim(),
+            pulse: dom.precipHorizon.value !== 'none',
+            pulseSpeed: Math.round(parseFloat(dom.pulseSpeed.value) * 1000),
+            maxBrightness: parseInt(dom.maxBrightness.value, 10),
+            sunsetSunrise: dom.sunsetSunrise.checked,
+            tempHorizon: dom.tempHorizon.value,
+            precipHorizon: dom.precipHorizon.value,
+        };
+
+        await window.api.saveSettings(settings);
+        await window.api.closeSettings();
+    });
+
+    dom.closeButton.addEventListener('click', () => {
+        window.api.closeSettings();
+    });
+}
+
+// =============================================================================
+// 4. Hardware Status & External Links
+// =============================================================================
+
+/**
+ * Updates footer status indicator, missing-hardware warning banner, and hardware-dependent inputs.
+ * Note: `tempHorizon` stays enabled even when unplugged because it still drives the tray icon.
+ * @param {boolean} connected Whether a Kuando Busylight HID device is attached.
+ */
+function updateHardwareStatus(connected) {
+    if (connected) {
+        dom.connectionStatus.innerHTML =
+            '<span class="connection-indicator connected"></span> Hardware Connected';
+    } else {
+        dom.connectionStatus.innerHTML =
+            '<span class="connection-indicator disconnected"></span> Hardware Disconnected';
     }
 
-    async function loadDiagnostics() {
-        diagDeviceInfo.textContent = 'Loading...';
-        try {
-            const info = await window.api.getDeviceInfo();
-            if (info) {
-                diagDeviceInfo.innerHTML = `
-                        <strong>Product:</strong> ${info.product}<br>
-                        <strong>Path:</strong> ${info.path}<br>
-                        <strong>VendorID:</strong> ${info.vendorId} (0x${info.vendorId.toString(16)})<br>
-                        <strong>ProductID:</strong> ${info.productId} (0x${info.productId.toString(16)})
-                    `;
-            } else {
-                diagDeviceInfo.textContent = 'No Busylight device connected.';
+    if (dom.deviceWarning) {
+        dom.deviceWarning.style.display = connected ? 'none' : 'block';
+    }
+
+    const hardwareInputs = [
+        dom.precipHorizon,
+        dom.pulseSpeed,
+        dom.maxBrightness,
+        dom.sunsetSunrise,
+    ];
+
+    hardwareInputs.forEach((el) => {
+        if (!el) return;
+        el.disabled = !connected;
+        const wrapper = el.closest('.setting') || el.closest('.select-wrapper');
+        if (wrapper) wrapper.style.opacity = connected ? '1' : '0.5';
+    });
+
+    // `precipHorizon` lives inside a nested flex column whose outer wrapper owns its label.
+    if (dom.precipHorizon) {
+        const columnWrapper = dom.precipHorizon.closest('.select-wrapper')?.parentElement;
+        if (columnWrapper) columnWrapper.style.opacity = connected ? '1' : '0.5';
+    }
+
+    // Keep Diagnostics manual test toggle aligned with physical device availability.
+    if (dom.diagManualMode) {
+        dom.diagManualMode.disabled = !connected;
+        if (dom.diagManualMode.parentElement) {
+            dom.diagManualMode.parentElement.style.opacity = connected ? '1' : '0.5';
+        }
+        if (!connected) {
+            if (dom.diagManualMode.checked) {
+                dom.diagManualMode.checked = false;
+                window.api.setManualMode(false);
             }
-        } catch (e) {
-            diagDeviceInfo.textContent = 'Error fetching device info.';
-            console.error(e);
-        }
-
-        // Load Weather Feed Info
-        const weatherDiv = document.getElementById('diag-weather-info');
-        if (weatherDiv) {
-            weatherDiv.textContent = 'Fetching weather data...';
-            try {
-                const weather = await window.api.getWeatherState();
-                if (weather) {
-                    const updated = weather.lastUpdated ? new Date(weather.lastUpdated).toLocaleString() : 'Unknown';
-                    const precip = weather.hasPrecipitation ? 'Yes' : 'No';
-                    const night = weather.isNight ? 'Yes' : 'No';
-
-                    weatherDiv.innerHTML = `
-                        <strong>Provider:</strong> ${weather.provider || 'Unknown'}<br>
-                        <strong>Location:</strong> ${weather.locationName || 'Unknown'}<br>
-                        <strong>Temperature:</strong> ${weather.temperature}°C<br>
-                        <strong>Precipitation:</strong> ${precip}<br>
-                        <strong>Night Mode:</strong> ${night}<br>
-                        <strong>Last Updated:</strong> ${updated}
-                    `;
-
-                    // Populate Table
-                    const tableBody = document.getElementById('diag-forecast-table');
-                    if (tableBody && weather.debugForecast) {
-                        tableBody.innerHTML = weather.debugForecast.map(item => `
-                            <tr style="border-bottom: 1px solid #eee;">
-                                <td style="padding: 4px;">${new Date(item.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                                <td style="padding: 4px;">${item.temp.toFixed(1)}°</td>
-                                <td style="padding: 4px;">${Math.round(item.precipProb)}%</td>
-                                <td style="padding: 4px;">${item.precipType}</td>
-                            </tr>
-                        `).join('');
-                    }
-
-                } else {
-                    weatherDiv.textContent = 'No weather data available yet.';
-                }
-            } catch (e) {
-                weatherDiv.textContent = 'Error fetching weather data.';
-                console.error(e);
+            if (dom.diagControls) {
+                dom.diagControls.style.opacity = '0.5';
+                dom.diagControls.style.pointerEvents = 'none';
             }
         }
     }
 
-    function updateManualModeUI() {
-        if (diagManualMode.checked) {
-            diagControls.style.opacity = '1';
-            diagControls.style.pointerEvents = 'auto';
-            updateManualState();
-        } else {
-            diagControls.style.opacity = '0.5';
-            diagControls.style.pointerEvents = 'none';
-        }
+    syncWindowSize();
+}
+
+/**
+ * Fetches cached sunrise/sunset UTC timestamps and renders them in the user's local timezone.
+ */
+async function updateSunTimes() {
+    const weather = await window.api.getWeatherState();
+    if (weather && weather.sunTimes && weather.sunTimes.sunrise) {
+        const fmt = (iso) => {
+            if (!iso) return '--:--';
+            return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        };
+        const nextSunset = fmt(weather.sunTimes.sunset);
+        const nextSunrise = fmt(weather.sunTimes.sunrise);
+        dom.sunTimes.innerHTML =
+            `<span>Next sunset: <strong>${nextSunset}</strong></span>` +
+            `<span>Next sunrise: <strong>${nextSunrise}</strong></span>`;
+        syncWindowSize();
     }
+}
 
-    function updateManualState() {
-        if (!diagManualMode.checked) return;
-
-        const temp = parseInt(diagTemp.value, 10);
-        const pulse = diagPulse.checked;
-
-        window.api.applyManualState({
-            temp: temp,
-            pulse: pulse,
-            maxBrightness: 100, // Full brightness to guarantee visibility during test
-            pulseSpeed: 1500    // Quick 1.5s pulse
+/**
+ * Attaches external browser click handlers for attribution and help links.
+ */
+function attachExternalLinkListeners() {
+    const bindExternal = (el, url) => {
+        if (!el) return;
+        el.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.api.openExternal(url);
         });
+    };
+
+    bindExternal(dom.owmLink, 'https://openweathermap.org');
+    bindExternal(dom.openMeteoLink, 'https://open-meteo.com/');
+    bindExternal(dom.busylightLink, 'https://busylight.com/');
+}
+
+// =============================================================================
+// 5. Diagnostics Mode (Inspection + Manual Hardware Override)
+// =============================================================================
+
+/**
+ * Escapes HTML special characters when rendering dynamic API or USB device strings.
+ * @param {unknown} value
+ * @returns {string}
+ */
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+/**
+ * Loads connected USB HID metadata and current cached weather/forecast data into Diagnostics.
+ */
+async function loadDiagnostics() {
+    dom.diagDeviceInfo.textContent = 'Loading...';
+    try {
+        const [info, isConnected] = await Promise.all([
+            window.api.getDeviceInfo(),
+            window.api.getBusylightStatus(),
+        ]);
+        updateHardwareStatus(isConnected);
+
+        if (info) {
+            dom.diagDeviceInfo.innerHTML = `
+                <strong>Product:</strong> ${escapeHtml(info.product || 'Unknown')}<br>
+                <strong>Path:</strong> ${escapeHtml(info.path || 'Unknown')}<br>
+                <strong>VendorID:</strong> ${info.vendorId} (0x${info.vendorId.toString(16)})<br>
+                <strong>ProductID:</strong> ${info.productId} (0x${info.productId.toString(16)})
+            `;
+        } else {
+            dom.diagDeviceInfo.textContent = 'No Busylight device connected.';
+        }
+    } catch (e) {
+        dom.diagDeviceInfo.textContent = 'Error fetching device info.';
+        console.error(e);
     }
 
-    openDiagnosticsLink.addEventListener('click', (e) => {
+    if (!dom.diagWeatherInfo) return;
+    dom.diagWeatherInfo.textContent = 'Fetching weather data...';
+
+    try {
+        const weather = await window.api.getWeatherState();
+        if (weather) {
+            const updated = weather.lastUpdated
+                ? new Date(weather.lastUpdated).toLocaleString()
+                : 'Unknown';
+            const precip = weather.hasPrecipitation ? 'Yes' : 'No';
+            const night = weather.isNight ? 'Yes' : 'No';
+
+            dom.diagWeatherInfo.innerHTML = `
+                <strong>Provider:</strong> ${escapeHtml(weather.provider || 'Unknown')}<br>
+                <strong>Location:</strong> ${escapeHtml(weather.locationName || 'Unknown')}<br>
+                <strong>Temperature:</strong> ${weather.temperature}°C<br>
+                <strong>Precipitation:</strong> ${precip}<br>
+                <strong>Night Mode:</strong> ${night}<br>
+                <strong>Last Updated:</strong> ${escapeHtml(updated)}
+            `;
+
+            if (dom.diagForecastTable && weather.debugForecast) {
+                dom.diagForecastTable.innerHTML = weather.debugForecast
+                    .map(
+                        (item) => `
+                        <tr style="border-bottom: 1px solid #eee;">
+                            <td style="padding: 4px;">${new Date(item.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                            <td style="padding: 4px;">${item.temp.toFixed(1)}°</td>
+                            <td style="padding: 4px;">${Math.round(item.precipProb)}%</td>
+                            <td style="padding: 4px;">${escapeHtml(item.precipType)}</td>
+                        </tr>
+                    `
+                    )
+                    .join('');
+            }
+        } else {
+            dom.diagWeatherInfo.textContent = 'No weather data available yet.';
+        }
+    } catch (e) {
+        dom.diagWeatherInfo.textContent = 'Error fetching weather data.';
+        console.error(e);
+    }
+
+    syncWindowSize();
+}
+
+/**
+ * Switches between the Settings view and Diagnostics Mode, restoring live weather on exit.
+ * @param {boolean} show
+ */
+function toggleDiagnostics(show) {
+    if (show) {
+        dom.mainSettings.style.display = 'none';
+        dom.diagnosticsView.style.display = 'block';
+        loadDiagnostics();
+        dom.diagTemp.dispatchEvent(new Event('input'));
+    } else {
+        dom.diagnosticsView.style.display = 'none';
+        dom.mainSettings.style.display = 'block';
+        dom.diagManualMode.checked = false;
+        updateManualModeUI();
+        window.api.setManualMode(false);
+    }
+
+    syncWindowSize();
+}
+
+/**
+ * Syncs interactive opacity/pointer-events for Diagnostics test sliders.
+ */
+function updateManualModeUI() {
+    if (dom.diagManualMode.checked) {
+        dom.diagControls.style.opacity = '1';
+        dom.diagControls.style.pointerEvents = 'auto';
+        pushManualState();
+    } else {
+        dom.diagControls.style.opacity = '0.5';
+        dom.diagControls.style.pointerEvents = 'none';
+    }
+}
+
+/**
+ * Sends current Diagnostics slider values directly to the Busylight hardware controller.
+ */
+function pushManualState() {
+    if (!dom.diagManualMode.checked) return;
+
+    window.api.applyManualState({
+        temp: parseInt(dom.diagTemp.value, 10),
+        pulse: dom.diagPulse.checked,
+        maxBrightness: 100, // Full brightness guarantees test visibility
+        pulseSpeed: MANUAL_TEST_PULSE_SPEED_MS,
+    });
+}
+
+/**
+ * Registers event listeners for Diagnostics view navigation and manual hardware controls.
+ */
+function attachDiagnosticsListeners() {
+    dom.openDiagnostics.addEventListener('click', (e) => {
         e.preventDefault();
         toggleDiagnostics(true);
     });
 
-    diagClose.addEventListener('click', () => {
+    dom.diagClose.addEventListener('click', () => {
         toggleDiagnostics(false);
     });
 
-    diagManualMode.addEventListener('change', () => {
-        window.api.setManualMode(diagManualMode.checked);
+    dom.diagManualMode.addEventListener('change', () => {
+        window.api.setManualMode(dom.diagManualMode.checked);
         updateManualModeUI();
     });
 
-    diagTemp.addEventListener('input', () => {
-        const cVal = parseInt(diagTemp.value, 10);
-        const fVal = Math.round((cVal * 1.8) + 32);
-        diagTempValue.textContent = `${cVal}°C / ${fVal}°F`;
-        updateManualState();
+    dom.diagTemp.addEventListener('input', () => {
+        const cVal = parseInt(dom.diagTemp.value, 10);
+        const fVal = Math.round(cVal * 1.8 + 32);
+        dom.diagTempValue.textContent = `${cVal}°C / ${fVal}°F`;
+        pushManualState();
     });
 
-    diagPulse.addEventListener('change', updateManualState);
-}
-
-async function updateSunTimes() {
-    const weather = await window.api.getWeatherState();
-    const sunTimesDiv = document.getElementById('sunTimes');
-
-    if (weather && weather.sunTimes && weather.sunTimes.sunrise) {
-        const fmt = (d) => {
-            if (!d) return '--:--';
-            return new Date(d).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-        };
-        const nextSunset = fmt(weather.sunTimes.sunset);
-        const nextSunrise = fmt(weather.sunTimes.sunrise);
-
-        sunTimesDiv.innerHTML = `<span>Next sunset: <strong>${nextSunset}</strong></span><span>Next sunrise: <strong>${nextSunrise}</strong></span>`;
-    }
+    dom.diagPulse.addEventListener('change', pushManualState);
 }

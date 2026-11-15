@@ -143,6 +143,81 @@ pub fn is_precip_triggered(prob_pct: f64, rain_mm: f64, showers_mm: f64, snow_mm
         || snow_mm >= PRECIP_MM_THRESHOLD
 }
 
+/// Classifies precipitation type and intensity (`Light`/`Moderate`/`Heavy`) from hourly mm rates,
+/// probability threshold, and temperature fallback.
+///
+/// When deterministic accumulation is `0.0 mm/hr` but `prob_pct >= 35%`, falls back to `"Snow"`
+/// (`temp_c <= 0.0`) or `"Rain"` (`temp_c > 0.0`). Returns `"None"` when below thresholds.
+pub fn classify_precip_label(
+    temp_c: f64,
+    prob_pct: f64,
+    rain_mm_hr: f64,
+    snow_mm_hr: f64,
+) -> String {
+    if snow_mm_hr > 0.0
+        || (rain_mm_hr <= 0.0 && prob_pct >= PRECIP_PROB_THRESHOLD_PCT && temp_c <= 0.0)
+    {
+        if snow_mm_hr >= 2.5 {
+            "Heavy snow".to_string()
+        } else if snow_mm_hr >= 1.0 {
+            "Moderate snow".to_string()
+        } else if snow_mm_hr > 0.0 {
+            "Light snow".to_string()
+        } else {
+            "Snow".to_string()
+        }
+    } else if rain_mm_hr > 0.0 || prob_pct >= PRECIP_PROB_THRESHOLD_PCT {
+        if rain_mm_hr >= 7.6 {
+            "Heavy rain".to_string()
+        } else if rain_mm_hr >= 2.5 {
+            "Moderate rain".to_string()
+        } else if rain_mm_hr > 0.0 {
+            "Light rain".to_string()
+        } else {
+            "Rain".to_string()
+        }
+    } else {
+        "None".to_string()
+    }
+}
+
+/// Formats a UTC timestamp into a 12-hour local clock string without leading zeros (e.g., `"6:00 PM"`).
+pub fn format_local_clock(dt_utc: DateTime<Utc>) -> String {
+    let local_dt = dt_utc.with_timezone(&Local);
+    let (is_pm, hour12) = local_dt.hour12();
+    let suffix = if is_pm { "PM" } else { "AM" };
+    format!("{}:{:02} {}", hour12, local_dt.minute(), suffix)
+}
+
+/// Formats a precipitation alert string for tooltips and Diagnostics status.
+///
+/// Examples: `"Heavy rain 38% likely at 6:00 PM"`, `"Light rain 60% likely now"`, `"Moderate rain now"`.
+pub fn format_precip_alert(label: &str, prob_pct: f64, time_local_str: Option<&str>) -> String {
+    let prob = prob_pct.round().clamp(0.0, 100.0) as u32;
+    match (time_local_str, prob > 0) {
+        (Some(t), true) => format!("{} {}% likely at {}", label, prob, t),
+        (Some(t), false) => format!("{} at {}", label, t),
+        (None, true) => format!("{} {}% likely now", label, prob),
+        (None, false) => format!("{} now", label),
+    }
+}
+
+/// Extracts `(pop_pct, rain_3h_mm, snow_3h_mm)` from an OpenWeatherMap 3-hour forecast item.
+fn extract_owm_precip(item: &serde_json::Value) -> (f64, f64, f64) {
+    let pop_pct = item.get("pop").and_then(|v| v.as_f64()).unwrap_or(0.0) * 100.0;
+    let rain_3h = item
+        .get("rain")
+        .and_then(|v| v.get("3h"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let snow_3h = item
+        .get("snow")
+        .and_then(|v| v.get("3h"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    (pop_pct, rain_3h, snow_3h)
+}
+
 /// HTTP weather and geolocation client shared across background polling and Tauri commands.
 pub struct WeatherService {
     client: Client,
@@ -508,23 +583,33 @@ impl WeatherService {
         }
 
         let mut has_precipitation = false;
+        let mut precip_summary: Option<String> = None;
         if precip_blocks > 0 && !list.is_empty() {
             let limit = std::cmp::min(precip_blocks, list.len());
-            for item in &list[0..limit] {
-                let rain = item
-                    .get("rain")
-                    .and_then(|v| v.get("3h"))
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                let snow = item
-                    .get("snow")
-                    .and_then(|v| v.get("3h"))
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                let pop_pct = item.get("pop").and_then(|v| v.as_f64()).unwrap_or(0.0) * 100.0;
+            for (idx, item) in list[0..limit].iter().enumerate() {
+                let (pop_pct, rain_3h, snow_3h) = extract_owm_precip(item);
 
-                if is_precip_triggered(pop_pct, rain, 0.0, snow) {
+                if is_precip_triggered(pop_pct, rain_3h, 0.0, snow_3h) {
                     has_precipitation = true;
+                    let slot_temp = item
+                        .get("main")
+                        .and_then(|v| v.get("temp"))
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(temperature);
+                    let slot_dt = item
+                        .get("dt")
+                        .and_then(|v| v.as_i64())
+                        .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
+                        .unwrap_or_else(Utc::now);
+
+                    let label =
+                        classify_precip_label(slot_temp, pop_pct, rain_3h / 3.0, snow_3h / 3.0);
+                    let time_str = if idx == 0 {
+                        None
+                    } else {
+                        Some(format_local_clock(slot_dt))
+                    };
+                    precip_summary = Some(format_precip_alert(&label, pop_pct, time_str.as_deref()));
                     break;
                 }
             }
@@ -540,14 +625,9 @@ impl WeatherService {
                 .and_then(|v| v.get("temp"))
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0);
-            let pop_val = item.get("pop").and_then(|v| v.as_f64()).unwrap_or(0.0) * 100.0;
-            let precip_type = if item.get("snow").is_some() {
-                "Snow".to_string()
-            } else if item.get("rain").is_some() {
-                "Rain".to_string()
-            } else {
-                "None".to_string()
-            };
+            let (pop_val, rain_3h, snow_3h) = extract_owm_precip(item);
+            let precip_type =
+                classify_precip_label(temp_val, pop_val, rain_3h / 3.0, snow_3h / 3.0);
 
             debug_forecast.push(ForecastItem {
                 time: Utc.timestamp_opt(time_val, 0).single().unwrap_or_else(Utc::now),
@@ -561,6 +641,7 @@ impl WeatherService {
         Ok(WeatherState {
             temperature,
             has_precipitation,
+            precip_summary,
             location_name,
             sun_times,
             is_night,
@@ -662,6 +743,7 @@ impl WeatherService {
         }
 
         let mut has_precipitation = false;
+        let mut precip_summary: Option<String> = None;
         if precip_hours > 0 {
             if let Some(p_arr) = hourly_probs {
                 let limit = std::cmp::min(p_arr.len(), current_hour_index + precip_hours);
@@ -682,6 +764,27 @@ impl WeatherService {
 
                     if is_precip_triggered(prob_val, rain_val, show_val, snow_val) {
                         has_precipitation = true;
+                        let slot_temp = hourly_temps
+                            .and_then(|arr| arr.get(i))
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(temperature);
+                        let label = classify_precip_label(
+                            slot_temp,
+                            prob_val,
+                            rain_val + show_val,
+                            snow_val,
+                        );
+                        let time_str = if i == current_hour_index {
+                            None
+                        } else {
+                            hourly_times
+                                .and_then(|arr| arr.get(i))
+                                .and_then(|v| v.as_str())
+                                .and_then(parse_openmeteo_gmt_timestamp)
+                                .map(format_local_clock)
+                        };
+                        precip_summary =
+                            Some(format_precip_alert(&label, prob_val, time_str.as_deref()));
                         break;
                     }
                 }
@@ -714,13 +817,8 @@ impl WeatherService {
                         .and_then(|v| v.as_f64())
                         .unwrap_or(0.0);
 
-                    let precip_type = if snow_val > 0.0 {
-                        "Snow".to_string()
-                    } else if rain_val > 0.0 || show_val > 0.0 {
-                        "Rain".to_string()
-                    } else {
-                        "None".to_string()
-                    };
+                    let precip_type =
+                        classify_precip_label(t_val, prob_val, rain_val + show_val, snow_val);
 
                     debug_forecast.push(ForecastItem {
                         time: dt,
@@ -736,6 +834,7 @@ impl WeatherService {
         Ok(WeatherState {
             temperature,
             has_precipitation,
+            precip_summary,
             location_name,
             sun_times,
             is_night,
@@ -852,5 +951,46 @@ mod tests {
         );
         assert_eq!(parse_location_query("London"), ("London", None));
         assert_eq!(parse_location_query("  Tokyo , "), ("Tokyo", None));
+    }
+
+    #[test]
+    fn test_classify_precip_label_intensities_and_fallbacks() {
+        // Below thresholds -> "None"
+        assert_eq!(classify_precip_label(20.0, 25.0, 0.0, 0.0), "None");
+
+        // Probability >= 35% with 0.0mm deterministic accumulation falls back cleanly by temp
+        assert_eq!(classify_precip_label(18.0, 45.0, 0.0, 0.0), "Rain");
+        assert_eq!(classify_precip_label(0.0, 45.0, 0.0, 0.0), "Snow");
+        assert_eq!(classify_precip_label(-3.5, 45.0, 0.0, 0.0), "Snow");
+
+        // Rain intensity tiers (mm/hr)
+        assert_eq!(classify_precip_label(15.0, 60.0, 0.8, 0.0), "Light rain");
+        assert_eq!(classify_precip_label(15.0, 60.0, 2.5, 0.0), "Moderate rain");
+        assert_eq!(classify_precip_label(15.0, 60.0, 7.6, 0.0), "Heavy rain");
+
+        // Snow intensity tiers (mm/hr) take priority over rain when snow > 0
+        assert_eq!(classify_precip_label(-1.0, 70.0, 0.0, 0.5), "Light snow");
+        assert_eq!(classify_precip_label(-1.0, 70.0, 0.0, 1.0), "Moderate snow");
+        assert_eq!(classify_precip_label(-1.0, 70.0, 0.0, 2.5), "Heavy snow");
+    }
+
+    #[test]
+    fn test_format_precip_alert_now_and_future() {
+        assert_eq!(
+            format_precip_alert("Heavy rain", 38.4, Some("6:00 PM")),
+            "Heavy rain 38% likely at 6:00 PM"
+        );
+        assert_eq!(
+            format_precip_alert("Light rain", 60.0, None),
+            "Light rain 60% likely now"
+        );
+        assert_eq!(
+            format_precip_alert("Moderate rain", 0.0, Some("7:00 PM")),
+            "Moderate rain at 7:00 PM"
+        );
+        assert_eq!(
+            format_precip_alert("Moderate rain", 0.0, None),
+            "Moderate rain now"
+        );
     }
 }

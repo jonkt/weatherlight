@@ -24,6 +24,12 @@ let dom = {};
 /** Pending debounce timer for window auto-resize calculations. */
 let resizeTimeout = null;
 
+/** Tracks whether the Settings form contains unapplied edits. */
+let isDirty = false;
+
+/** Timer resetting temporary "Applied ✓" label back to "Apply". */
+let applyFeedbackTimeout = null;
+
 document.addEventListener('DOMContentLoaded', () => {
     initializeApp();
 });
@@ -68,6 +74,7 @@ function initializeApp() {
         // Footer & actions
         deviceWarning: document.getElementById('device-warning'),
         connectionStatus: document.getElementById('connection-status'),
+        applyButton: document.getElementById('apply'),
         saveButton: document.getElementById('save'),
         closeButton: document.getElementById('close'),
 
@@ -168,15 +175,46 @@ function updateUIState() {
 }
 
 /**
- * Hydrates form values from persisted backend configuration and initializes background pollers.
+ * Updates the form's dirty state, synchronizing the Apply button's availability and toggling
+ * the dismiss button between "Close" (no pending changes) and "Cancel" (discard edits).
+ * @param {boolean} dirty Whether the form has unsaved edits.
+ * @param {boolean} [showAppliedFeedback=false] Temporarily shows "Applied ✓" after saving in place.
  */
-async function hydrateInitialState() {
-    const [settings, weather, isConnected] = await Promise.all([
-        window.api.getSettings(),
-        window.api.getWeatherState(),
-        window.api.getBusylightStatus(),
-    ]);
+function setDirtyState(dirty, showAppliedFeedback = false) {
+    isDirty = dirty;
 
+    if (applyFeedbackTimeout) {
+        clearTimeout(applyFeedbackTimeout);
+        applyFeedbackTimeout = null;
+    }
+
+    if (dirty) {
+        dom.applyButton.disabled = false;
+        dom.applyButton.textContent = 'Apply';
+        dom.closeButton.textContent = 'Cancel';
+    } else {
+        dom.applyButton.disabled = true;
+        dom.closeButton.textContent = 'Close';
+
+        if (showAppliedFeedback) {
+            dom.applyButton.textContent = 'Applied ✓';
+            applyFeedbackTimeout = setTimeout(() => {
+                dom.applyButton.textContent = 'Apply';
+                applyFeedbackTimeout = null;
+            }, 1500);
+        } else {
+            dom.applyButton.textContent = 'Apply';
+        }
+    }
+}
+
+/**
+ * Populates all form controls from persisted backend configuration and weather state.
+ * Used on initial load and when reverting unapplied changes on Cancel.
+ * @param {Object} settings CamelCase `AppConfig` object from backend.
+ * @param {Object | null} weather Cached `WeatherState` snapshot from backend.
+ */
+function populateFormFromSettings(settings, weather) {
     dom.provider.value = settings.provider || 'open-meteo';
 
     const unitVal = settings.unit || 'C';
@@ -204,6 +242,45 @@ async function hydrateInitialState() {
     dom.precipHorizon.value = settings.precipHorizon || 'immediate';
 
     updateUIState();
+}
+
+/**
+ * Reads current form values, merges onto the latest backend config (preserving tray-controlled
+ * flags like `autoStart`), and persists them via Tauri IPC.
+ * @returns {Promise<void>}
+ */
+async function saveCurrentSettings() {
+    const latestSettings = await window.api.getSettings();
+    const settings = {
+        ...latestSettings,
+        provider: dom.provider.value,
+        unit: document.querySelector('input[name="unit"]:checked').value,
+        autoLocation: dom.autoLocation.checked,
+        location: dom.location.value.trim(),
+        apiKey: dom.apiKey.value.trim(),
+        pulse: dom.precipHorizon.value !== 'none',
+        pulseSpeed: Math.round(parseFloat(dom.pulseSpeed.value) * 1000),
+        maxBrightness: parseInt(dom.maxBrightness.value, 10),
+        sunsetSunrise: dom.sunsetSunrise.checked,
+        tempHorizon: dom.tempHorizon.value,
+        precipHorizon: dom.precipHorizon.value,
+    };
+
+    await window.api.saveSettings(settings);
+}
+
+/**
+ * Hydrates form values from persisted backend configuration and initializes background pollers.
+ */
+async function hydrateInitialState() {
+    const [settings, weather, isConnected] = await Promise.all([
+        window.api.getSettings(),
+        window.api.getWeatherState(),
+        window.api.getBusylightStatus(),
+    ]);
+
+    populateFormFromSettings(settings, weather);
+    setDirtyState(false);
     updateHardwareStatus(isConnected);
     updateSunTimes();
 
@@ -276,32 +353,53 @@ async function validateLocationInput() {
 }
 
 /**
- * Registers event listeners for configuration form inputs, save, and cancel buttons.
+ * Registers event listeners for configuration form inputs, Apply, Save & Close, and Close/Cancel.
  */
 function attachSettingsListeners() {
-    dom.provider.addEventListener('change', updateUIState);
+    const markDirty = () => setDirtyState(true);
+
+    dom.provider.addEventListener('change', () => {
+        updateUIState();
+        markDirty();
+    });
+
+    document.querySelectorAll('input[name="unit"]').forEach((radio) => {
+        radio.addEventListener('change', markDirty);
+    });
 
     dom.autoLocation.addEventListener('change', () => {
         updateUIState();
+        markDirty();
         if (dom.autoLocation.checked) {
             detectAndPopulateLocation();
         }
     });
 
+    dom.location.addEventListener('input', markDirty);
     dom.location.addEventListener('blur', validateLocationInput);
     dom.location.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') validateLocationInput();
     });
 
-    dom.precipHorizon.addEventListener('change', updateUIState);
+    dom.apiKey.addEventListener('input', markDirty);
+    dom.tempHorizon.addEventListener('change', markDirty);
+
+    dom.precipHorizon.addEventListener('change', () => {
+        updateUIState();
+        markDirty();
+    });
 
     dom.pulseSpeed.addEventListener('input', () => {
         dom.pulseSpeedValue.textContent = `${parseFloat(dom.pulseSpeed.value).toFixed(1)}s`;
+        markDirty();
     });
 
     dom.maxBrightness.addEventListener('input', () => {
         dom.maxBrightnessValue.textContent = `${dom.maxBrightness.value}%`;
+        markDirty();
     });
+
+    dom.sunsetSunrise.addEventListener('change', markDirty);
 
     dom.apiKeyHelpIcon.addEventListener('click', (e) => {
         e.preventDefault();
@@ -310,30 +408,28 @@ function attachSettingsListeners() {
         syncWindowSize();
     });
 
-    dom.saveButton.addEventListener('click', async () => {
-        // Merge onto latest backend config so tray-controlled flags like `autoStart` are preserved.
-        const latestSettings = await window.api.getSettings();
-        const settings = {
-            ...latestSettings,
-            provider: dom.provider.value,
-            unit: document.querySelector('input[name="unit"]:checked').value,
-            autoLocation: dom.autoLocation.checked,
-            location: dom.location.value.trim(),
-            apiKey: dom.apiKey.value.trim(),
-            pulse: dom.precipHorizon.value !== 'none',
-            pulseSpeed: Math.round(parseFloat(dom.pulseSpeed.value) * 1000),
-            maxBrightness: parseInt(dom.maxBrightness.value, 10),
-            sunsetSunrise: dom.sunsetSunrise.checked,
-            tempHorizon: dom.tempHorizon.value,
-            precipHorizon: dom.precipHorizon.value,
-        };
+    dom.applyButton.addEventListener('click', async () => {
+        await saveCurrentSettings();
+        setDirtyState(false, true);
+        // Refresh displayed sunset/sunrise times once the background weather pipeline completes.
+        setTimeout(updateSunTimes, 1500);
+    });
 
-        await window.api.saveSettings(settings);
+    dom.saveButton.addEventListener('click', async () => {
+        await saveCurrentSettings();
+        setDirtyState(false);
         await window.api.closeSettings();
     });
 
-    dom.closeButton.addEventListener('click', () => {
-        window.api.closeSettings();
+    dom.closeButton.addEventListener('click', async () => {
+        const [persistedSettings, weather] = await Promise.all([
+            window.api.getSettings(),
+            window.api.getWeatherState(),
+        ]);
+        populateFormFromSettings(persistedSettings, weather);
+        setLocationStatus('', '#666');
+        setDirtyState(false);
+        await window.api.closeSettings();
     });
 }
 
@@ -489,7 +585,11 @@ async function loadDiagnostics() {
             const updated = weather.lastUpdated
                 ? new Date(weather.lastUpdated).toLocaleString()
                 : 'Unknown';
-            const precip = weather.hasPrecipitation ? 'Yes' : 'No';
+            const precip = weather.hasPrecipitation
+                ? weather.precipSummary
+                    ? `Yes (${escapeHtml(weather.precipSummary)})`
+                    : 'Yes'
+                : 'No';
             const night = weather.isNight ? 'Yes' : 'No';
 
             dom.diagWeatherInfo.innerHTML = `

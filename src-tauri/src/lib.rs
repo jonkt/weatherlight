@@ -314,10 +314,11 @@ pub fn run() {
 // Weather Pipeline & Formatting Helpers
 // ============================================================================
 
-/// Formats the system tray hover tooltip (`"<City>: <Temp>°<Unit> [(Precip)] [(Night)]"`).
+/// Formats the system tray hover tooltip (`"<City>: <Temp>°<Unit> [(<Precip Alert>)] [(Night)]"`).
 ///
-/// Converts Celsius `weather.temperature` into `config.unit` (`"C"` or `"F"`) before rounding
-/// and normalizes `-0.0` so freezing transitions near zero never display `"-0°C"`.
+/// Uses `weather.precip_summary` when available (e.g., `"Heavy rain 38% likely at 6:00 PM"`),
+/// falling back to `"Precip"`. Converts Celsius `weather.temperature` into `config.unit`
+/// (`"C"` or `"F"`) before rounding and normalizes `-0.0` so freezing transitions near zero never display `"-0°C"`.
 pub fn format_tray_tooltip(weather: &WeatherState, config: &AppConfig) -> String {
     let display_temp = config.format_temperature(weather.temperature).round() + 0.0;
     let is_night_mode = config.sunset_sunrise && weather.is_night;
@@ -329,7 +330,8 @@ pub fn format_tray_tooltip(weather: &WeatherState, config: &AppConfig) -> String
 
     let mut tooltip = format!("{}: {}°{}", short_location, display_temp, config.unit);
     if weather.has_precipitation {
-        tooltip.push_str(" (Precip)");
+        let detail = weather.precip_summary.as_deref().unwrap_or("Precip");
+        tooltip.push_str(&format!(" ({})", detail));
     }
     if is_night_mode {
         tooltip.push_str(" (Night)");
@@ -421,10 +423,16 @@ mod tests {
     use crate::models::SunTimes;
     use chrono::Utc;
 
-    fn sample_weather(temp_c: f64, precip: bool, is_night: bool) -> WeatherState {
+    fn sample_weather(
+        temp_c: f64,
+        precip: bool,
+        precip_summary: Option<&str>,
+        is_night: bool,
+    ) -> WeatherState {
         WeatherState {
             temperature: temp_c,
             has_precipitation: precip,
+            precip_summary: precip_summary.map(|s| s.to_string()),
             location_name: "Havelock North, Hawke's Bay Region, New Zealand".to_string(),
             sun_times: SunTimes {
                 sunrise: None,
@@ -440,28 +448,40 @@ mod tests {
     #[test]
     fn test_format_tray_tooltip_celsius_and_fahrenheit() {
         let mut cfg = AppConfig::default();
-        let ws = sample_weather(20.4, false, false);
+        let ws = sample_weather(20.4, false, None, false);
         assert_eq!(format_tray_tooltip(&ws, &cfg), "Havelock North: 20°C");
 
-        // Fahrenheit regression test: must convert numeric value alongside "°F" unit label.
+        // Fahrenheit regression test + detailed precipitation summary formatting.
         cfg.unit = "F".to_string();
-        let ws_f = sample_weather(20.0, true, true);
+        let ws_f = sample_weather(
+            20.0,
+            true,
+            Some("Heavy rain 38% likely at 6:00 PM"),
+            true,
+        );
         // `sunset_sunrise` is false by default, so "(Night)" must not appear yet.
         assert_eq!(
             format_tray_tooltip(&ws_f, &cfg),
-            "Havelock North: 68°F (Precip)"
+            "Havelock North: 68°F (Heavy rain 38% likely at 6:00 PM)"
         );
 
         cfg.sunset_sunrise = true;
         assert_eq!(
             format_tray_tooltip(&ws_f, &cfg),
-            "Havelock North: 68°F (Precip) (Night)"
+            "Havelock North: 68°F (Heavy rain 38% likely at 6:00 PM) (Night)"
+        );
+
+        // Fallback to "(Precip)" if `precip_summary` is missing while `has_precipitation` is true.
+        let ws_fallback = sample_weather(20.0, true, None, false);
+        cfg.sunset_sunrise = false;
+        assert_eq!(
+            format_tray_tooltip(&ws_fallback, &cfg),
+            "Havelock North: 68°F (Precip)"
         );
 
         // Near-zero negative temperatures must format as "0°C", never "-0°C".
         cfg.unit = "C".to_string();
-        cfg.sunset_sunrise = false;
-        let ws_zero = sample_weather(-0.2, false, false);
+        let ws_zero = sample_weather(-0.2, false, None, false);
         assert_eq!(format_tray_tooltip(&ws_zero, &cfg), "Havelock North: 0°C");
     }
 }

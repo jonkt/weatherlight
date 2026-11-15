@@ -69,14 +69,15 @@ graph TD
 
 5. **`busylight.rs` (USB HID Driver & Smooth Pulse Engine)**
    - Drives Plenom/Kuando Omega/Alpha devices (`VID 0x27bb`, 65-byte report with 16-bit big-endian checksum) and legacy Microchip UC devices (`VID 0x04d8`, 9-byte report) directly over `hidapi`.
+   - Enforces Kuando's `0..=100` hardware PWM duty-cycle ceiling (`MAX_HARDWARE_PWM = 100.0`, via `hardware_ceiling_for_color`) across `compute_pulse_power_bounds`, `light_pct`, and `degamma` so high-saturation temperatures (such as `40°C` `(255, 1, 1)` or `-19°C` `(25, 25, 140)`) never pin flat at 100% DC.
    - Spawns a dedicated `std::thread` polling `PulseState` at ~30 FPS (`compute_pulse_frame`), isolated from async weather requests.
-   - Applies a `1.5` perceptual brightness exponent (`BRIGHTNESS_GAMMA`) with rounded 8-bit scaling (`scale_color_with_power`) and a hue-preserving dynamic floor (`compute_pulse_power_bounds`, targeting `MIN_ACTIVE_CHANNEL_FLOOR = 7.0` capped at `MAX_FLOOR_POWER_RATIO = 0.55` of peak power) so secondary color channels fade smoothly without hitting low-end hardware PWM cutoff.
-   - Deduplicates identical consecutive `(r, g, b)` USB HID frames at peaks/troughs while honoring a 20-second keep-alive interval (`KEEPALIVE_INTERVAL`) so the hardware watchdog never resets or times out.
+   - Applies a `1.5` perceptual brightness exponent (`BRIGHTNESS_GAMMA`) with rounded scaling (`scale_color_with_power`) and low-PWM beat-flicker stabilization (`stabilize_pulse_channel` + `MIN_ACTIVE_CHANNEL_FLOOR = 13.0` / `MIN_SMOOTH_PULSE_PWM = 13` capped at `MAX_FLOOR_POWER_RATIO = 0.55`): active channels whose peak reaches `>= 13` are floored at `13` (staying clear of the `1..=12` 30 FPS beat-flicker zone), while tiny trace channels (`peak < 13`, such as `G=1, B=1` at `40°C`) are suppressed to `0` so they never strobe at ~10 Hz.
+   - Emits active pulse frames at a steady 33ms USB HID cadence without skipping repeated turnaround frames (preventing transient `+35%` PWM-reset brightness pops at cycle troughs), while idle solid states send a 20-second keep-alive packet (`KEEPALIVE_INTERVAL`) for the hardware watchdog.
 
 6. **`weather.rs` (Weather Providers, Geocoding & Horizons)**
    - Wraps `reqwest::Client` (10-second timeout) for IP geolocation (`ip-api.com`), free-form location geocoding (Open-Meteo and OpenWeatherMap), and weather feeds.
    - Parses upstream sunrise/sunset timestamps into UTC and determines `is_night` via `check_is_night_at` (handling both standard UTC ordering and wrapped UTC midnight intervals such as NZ/AU).
-   - Evaluates configurable temperature high horizons (`current`, `short_high`, `today_high`, `day_high`) and precipitation horizons (`none`, `immediate`, `short`, `today`, `day` via `is_precip_triggered`), producing a normalized `WeatherState` and 24h/48h `debug_forecast`.
+   - Evaluates configurable temperature high horizons (`current`, `short_high`, `today_high`, `day_high`) and precipitation horizons (`none`, `immediate`, `short`, `today`, `day` via `is_precip_triggered`), classifying intensity (`classify_precip_label`), populating `WeatherState::precip_summary` via `format_precip_alert`, and returning a 24h/48h `debug_forecast`.
 
 7. **`tray.rs` (System Tray & Dynamic Swatch Icon)**
    - Builds the system tray menu (`Refresh`, `Settings`, `Start with Windows`, `Quit`) via Tauri's tray API. Note that `Quit` calls `std::process::exit(0)` to bypass exit prevention.

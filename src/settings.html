@@ -176,6 +176,23 @@
             background-color: #2980b9;
         }
 
+        #apply {
+            background-color: transparent;
+            color: var(--primary);
+            border: 1px solid var(--primary);
+        }
+
+        #apply:hover:not(:disabled) {
+            background-color: #eef7ff;
+        }
+
+        #apply:disabled {
+            border-color: var(--border);
+            color: var(--text-secondary);
+            opacity: 0.5;
+            cursor: default;
+        }
+
         #close {
             background-color: transparent;
             color: var(--text-secondary);
@@ -344,8 +361,9 @@
             </div>
 
             <div class="buttons">
-                <button id="close">Cancel</button>
-                <button id="save">Save Settings</button>
+                <button id="close">Close</button>
+                <button id="apply" disabled>Apply</button>
+                <button id="save">Save &amp; Close</button>
             </div>
         </div>
 

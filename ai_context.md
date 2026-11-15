@@ -13,7 +13,7 @@ This document is optimized for AI agents and future engineers developing and mai
 | `src-tauri/src/models.rs` | Shared camelCase JSON DTOs across IPC | `SunTimes`, `WeatherState`, `ForecastItem`, `LocationDetectResult`, `LocationValidationResult`, `DeviceInfoResult`, `ManualState` |
 | `src-tauri/src/config.rs` | Persistent config (`config.json`) & unit conversion | `AppConfig`, `load_config()`, `save_config()`, `get_config_path()`, `AppConfig::format_temperature()` |
 | `src-tauri/src/busylight.rs` | USB HID packet driver & 30 FPS pulse worker | `Busylight`, `BusylightController`, `PulseState`, `compute_pulse_power_bounds()`, `compute_pulse_frame()`, `scale_color_with_power()` |
-| `src-tauri/src/weather.rs` | IP geolocation, geocoding, Open-Meteo / OWM feeds | `WeatherService`, `check_is_night_at()`, `horizon_hours_openmeteo()`, `horizon_blocks_owm()`, `is_precip_triggered()` |
+| `src-tauri/src/weather.rs` | IP geolocation, geocoding, Open-Meteo / OWM feeds | `WeatherService`, `check_is_night_at()`, `horizon_hours_openmeteo()`, `horizon_blocks_owm()`, `is_precip_triggered()`, `classify_precip_label()`, `format_precip_alert()` |
 | `src-tauri/src/tray.rs` | System tray menu, autostart sync, 16x16 RGBA icon | `create_tray()`, `update_tray_tooltip()`, `update_tray_icon()`, `render_tray_icon_rgba()` |
 | `src/api.js` | Frontend `window.api` Tauri IPC wrapper | `getSettings`, `saveSettings`, `applyManualState`, `onBusylightStatus`, etc. |
 | `src/settings.html` & `src/settings.js` | Settings & Diagnostics WebView UI | DOM IDs preserved for bindings; single `ResizeObserver`; 5-section modular layout |
@@ -44,14 +44,14 @@ This document is optimized for AI agents and future engineers developing and mai
 
 ## Coding Patterns & Invariants
 
-1. **Perceptual Brightness & Hue-Preserving Pulse Floor (`busylight.rs`)**:
-   - Hardware LED PWM scales linearly, while human brightness perception follows `BRIGHTNESS_GAMMA = 1.5` (chosen softer than `2.4`/`2.8` because `COLOR_SCALE` already includes gamma shaping on secondary channels).
-   - Color scaling and `calculate_weather_color()` use `.round() as u8` instead of truncating casts.
-   - `compute_pulse_power_bounds()` enforces `MIN_ACTIVE_CHANNEL_FLOOR = 7.0` on the smallest active channel (capped by `power_high * MAX_FLOOR_POWER_RATIO`, `0.55`) so low-PWM quantization (`byte <= 5`) does not extinguish secondary channels (e.g., green in warm orange) mid-breath.
+1. **Hardware PWM Ceiling, Perceptual Brightness & Flicker-Zone Stabilization (`busylight.rs`)**:
+   - Kuando Busylight (`VID 0x27bb`) firmware interprets bytes `3..=5` as `0..=100%` hardware PWM duty cycles (`MAX_HARDWARE_PWM = 100.0`); any byte `>= 100` saturates at 100% continuous DC. `hardware_ceiling_for_color()` caps power factors so high-saturation colors stay within `0..=100` without clipping or hue shift.
+   - Human brightness perception follows `BRIGHTNESS_GAMMA = 1.5` (softer than `2.4`/`2.8` because `COLOR_SCALE` already includes gamma shaping on secondary channels), and color scaling / `calculate_weather_color()` use `.round() as u8` instead of truncating casts.
+   - Under 30 FPS HID updates, PWM duty cycles in `1..=12` beat against the MCU's internal PWM clock at ~9–10 Hz. `compute_pulse_power_bounds()` enforces `MIN_ACTIVE_CHANNEL_FLOOR = 13.0` (capped by `power_high * MAX_FLOOR_POWER_RATIO`, `0.55`) only on channels whose peak reaches `>= 13`, and `stabilize_pulse_channel()` keeps those active channels in `13..=100` while suppressing tiny trace secondary channels (`peak < 13`, such as `G=1, B=1` at `40°C`) to `0` so they do not strobe.
 
-2. **Frame Deduplication & Hardware Keep-Alive (`busylight.rs`)**:
-   - Repeatedly sending identical RGB HID writes can reset the hardware PWM state and cause visible flicker.
-   - The 30 FPS pulse loop skips writes when `frame_voltage == last_sent_rgb` unless `KEEPALIVE_INTERVAL` (`20s`) has elapsed. Idle solid states similarly resend only every `20s`.
+2. **Uniform 33ms Pulse Cadence & Hardware Keep-Alive (`busylight.rs`)**:
+   - Every 65-byte `JUMP` HID write restarts the Busylight MCU's internal PWM timer; skipping HID writes when consecutive frames repeat at peaks/troughs produces a brief `30 Hz -> 0 Hz -> 30 Hz` brightness pop.
+   - The 30 FPS pulse loop therefore writes every 33ms frame steadily while `active == true`; idle solid states resend the current report every `KEEPALIVE_INTERVAL` (`20s`) to satisfy the hardware watchdog.
 
 3. **Single Source of Truth (`color.rs`, `busylight.rs`, `models.rs`)**:
    - All temperature-to-hex logic and hex parsing live in `color.rs` (shared by LED output and `tray.rs`).
@@ -76,7 +76,7 @@ This document is optimized for AI agents and future engineers developing and mai
 
 1. **Automated Rust Unit Tests (`cargo test`)**:
    - Run `cargo test` inside `z:\projects\weatherlight\src-tauri`.
-   - Covers `color.rs` (hex parsing, extreme clamping, `29.3°C` rounding), `config.rs` (defaults, partial JSON deserialization, `°C`/`°F` math), `busylight.rs` (power scaling, channel floor, ratio cap, `degamma` monotonicity), `weather.rs` (GMT timestamps, wrapped UTC day/night checks, OWM/Open-Meteo horizons, precipitation thresholds), `tray.rs` (16x16 geometry, corner transparency, night-mode stars), and `lib.rs` (tooltip formatting including Fahrenheit & `-0°C` guard).
+   - Covers `color.rs` (hex parsing, extreme clamping, `29.3°C` rounding), `config.rs` (defaults, partial JSON deserialization, `°C`/`°F` math), `busylight.rs` (`0..=100` hardware PWM ceiling, `40°C`/`-19°C`/`29.3°C` pulse curves free of `1..=12` flicker zone, ratio cap, `degamma` monotonicity), `weather.rs` (GMT timestamps, wrapped UTC day/night checks, OWM/Open-Meteo horizons, precipitation thresholds/intensity classification/alert formatting), `tray.rs` (16x16 geometry, corner transparency, night-mode stars), and `lib.rs` (tooltip formatting including Fahrenheit, precipitation alerts & `-0°C` guard).
    - Reference fixtures in root: `Temperature Color Mappings.txt`, `supported.json`, and `generate_scale.js`.
 
 2. **Live Dev / Release Verification**:

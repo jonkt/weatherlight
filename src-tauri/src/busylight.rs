@@ -7,23 +7,32 @@
 //!   65-byte Windows HID output report (`report ID 0x00` + 64 payload bytes):
 //!   - Byte `0`: HID Report ID (`0`)
 //!   - Byte `1`: Command header (`16` / `0x10`)
-//!   - Bytes `3..=5`: Red, Green, Blue PWM duty cycles (`0..=255`)
+//!   - Bytes `3..=5`: Red, Green, Blue hardware PWM duty cycles (`0..=100`; values `>= 100`
+//!     saturate the physical channel at 100% continuous DC output)
 //!   - Byte `8`: Audio/ring control (`128` = mute/off)
 //!   - Bytes `59..=62`: Sensitivity/timeout flags (`255`)
 //!   - Bytes `63..=64`: Big-endian 16-bit checksum of bytes `0..63`
 //! - **Legacy protocol (`VID = 0x04d8`, Microchip / original Kuando UC)**:
 //!   9-byte HID output report (`bytes 0..9`) without the trailing checksum block.
 //!
-//! ## Smooth Pulsing & Perceptual Scaling Invariants
-//! 1. Hardware PWM steps linearly, whereas human vision perceives brightness roughly by a power
-//!    law (`BRIGHTNESS_GAMMA = 1.5`, tuned softer than `2.8` because `COLOR_SCALE` already encodes
-//!    secondary-channel gamma curves).
-//! 2. At low PWM values (`1..=6`), 8-bit quantization causes visible stepping and sudden channel
-//!    extinction on warm hues (e.g., `29.3°C` orange `(255, 38, 0)` losing its tiny green channel).
-//!    `compute_pulse_power_bounds` enforces `MIN_ACTIVE_CHANNEL_FLOOR` (clamped by
-//!    `MAX_FLOOR_POWER_RATIO`) so active channels remain non-zero while preserving hue ratio.
-//! 3. `BusylightController` deduplicates identical consecutive RGB frames and throttles HID
-//!    writes to ~30 FPS, sending a 20-second keep-alive packet to satisfy the hardware watchdog.
+//! ## Smooth Pulsing & Hardware PWM Invariants
+//! 1. **Hardware PWM ceiling (`MAX_HARDWARE_PWM = 100.0`)**: Kuando Busylight firmware treats
+//!    bytes `3..=5` as `0..=100%` duty cycles. Scaling power factors by
+//!    `hardware_ceiling_for_color` ensures high-saturation colors (e.g., `40°C` `(255, 1, 1)` or
+//!    `-19°C` `(25, 25, 140)` at 100% brightness in Diagnostics Mode) modulate within `0..=100`
+//!    rather than pinning above `100`.
+//! 2. **Perceptual brightness (`BRIGHTNESS_GAMMA = 1.5`)**: Hardware PWM scales linearly, whereas
+//!    human vision perceives brightness roughly by a power law (tuned softer than `2.4`/`2.8`
+//!    because `COLOR_SCALE` already encodes secondary-channel gamma shaping).
+//! 3. **Low-PWM beat-flicker zone (`1..=12`, `MIN_SMOOTH_PULSE_PWM = 13`)**: Under 30 FPS HID
+//!    updates, resetting the internal MCU PWM timer beats against narrow duty cycles in `1..=12`
+//!    at ~9–10 Hz. During pulsing, active channels whose peak reaches `>= 13` are floored at `13`,
+//!    while tiny trace secondary channels (`peak < 13`, such as `G=1, B=1` at `40°C`) are
+//!    suppressed to `0` so they do not strobe.
+//! 4. **Uniform 33ms HID cadence during active pulsing**: Each HID write restarts the MCU's
+//!    internal PWM period; skipping writes at peaks/troughs produces a transient brightness pop
+//!    when resuming. Active pulse frames are therefore emitted steadily every 33ms, while idle
+//!    solid states send a 20-second keep-alive packet for the hardware watchdog.
 
 use hidapi::{HidApi, HidDevice};
 use serde::{Deserialize, Serialize};
@@ -52,33 +61,58 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(20);
 /// Cooldown between automatic USB reconnect attempts after a write failure.
 const RECONNECT_COOLDOWN: Duration = Duration::from_secs(2);
 
+/// Maximum hardware PWM duty cycle accepted by Kuando Busylight firmware (`0..=100`).
+/// Any value `>= 100` saturates the channel at 100% continuous DC output.
+const MAX_HARDWARE_PWM: f32 = 100.0;
+
+/// Minimum non-zero PWM duty cycle free from 30 FPS USB reset beat-flicker on Busylight Omega.
+/// Channels in `1..=12` experience ~9–10 Hz flicker under 33ms HID writes.
+const MIN_SMOOTH_PULSE_PWM: u8 = 13;
+
 /// Perceptual brightness exponent mapping slider `%` to linear LED power (`Option B`).
 /// Tuned softer than sRGB `2.4`/`2.8` because `COLOR_SCALE` stops already bake in color shaping.
 const BRIGHTNESS_GAMMA: f32 = 1.5;
 
-/// Minimum hardware PWM byte floor (`Option A`) for the smallest non-zero color channel at the
-/// pulse trough, preventing 8-bit stair-stepping and secondary-channel extinction.
-const MIN_ACTIVE_CHANNEL_FLOOR: f32 = 7.0;
+/// Minimum hardware PWM byte floor (`Option A`) for active color channels at the pulse trough,
+/// preventing low-PWM beat-flicker (`1..=12`) and secondary-channel extinction.
+const MIN_ACTIVE_CHANNEL_FLOOR: f32 = 13.0;
 
 /// Maximum allowed `(power_low / power_high)` ratio when enforcing the active-channel floor,
 /// guaranteeing every temperature retains at least ~45% optical pulse depth.
 const MAX_FLOOR_POWER_RATIO: f32 = 0.55;
 
-/// Scales an sRGB color tuple by a linear hardware power factor using rounding rather than
-/// truncating `as u8` casts so low-end transitions remain free of downward bias.
+/// Returns the maximum linear multiplier keeping the brightest channel within `0..=100` hardware PWM.
+fn hardware_ceiling_for_color(color_srgb: (u8, u8, u8)) -> f32 {
+    let c_max = color_srgb.0.max(color_srgb.1).max(color_srgb.2);
+    if c_max > 0 {
+        (MAX_HARDWARE_PWM / (c_max as f32)).min(1.0)
+    } else {
+        1.0
+    }
+}
+
+/// Scales a single 8-bit sRGB channel by `power_factor` into the `0..=100` hardware PWM range.
+fn scale_channel(c: u8, power_factor: f32) -> u8 {
+    (c as f32 * power_factor)
+        .round()
+        .clamp(0.0, MAX_HARDWARE_PWM) as u8
+}
+
+/// Scales an sRGB color tuple by a linear hardware power factor into the `0..=100` PWM range,
+/// using rounding rather than truncating casts so transitions stay free of downward bias.
 pub fn scale_color_with_power(color_srgb: (u8, u8, u8), power_factor: f32) -> (u8, u8, u8) {
     (
-        (color_srgb.0 as f32 * power_factor).round().clamp(0.0, 255.0) as u8,
-        (color_srgb.1 as f32 * power_factor).round().clamp(0.0, 255.0) as u8,
-        (color_srgb.2 as f32 * power_factor).round().clamp(0.0, 255.0) as u8,
+        scale_channel(color_srgb.0, power_factor),
+        scale_channel(color_srgb.1, power_factor),
+        scale_channel(color_srgb.2, power_factor),
     )
 }
 
-/// Computes `(power_high, power_low)` linear LED multipliers for pulsing while preserving hue.
+/// Computes `(power_high, power_low)` linear LED multipliers for pulsing within `0..=100` hardware PWM.
 ///
-/// Enforces `MIN_ACTIVE_CHANNEL_FLOOR` on the smallest non-zero channel so subtle secondary
-/// channels (such as the green component in warm orange temperatures) do not collapse to `0` at
-/// the pulse trough, while capping the floor at `power_high * MAX_FLOOR_POWER_RATIO`.
+/// Clamps `power_high` by `hardware_ceiling_for_color` so high-saturation colors never pin flat above
+/// `100`, scales `power_low` to preserve relative pulse depth, and enforces `MIN_ACTIVE_CHANNEL_FLOOR`
+/// only on channels whose peak reaches `MIN_ACTIVE_CHANNEL_FLOOR` (ignoring trace `1..=3` channels).
 pub fn compute_pulse_power_bounds(
     color_srgb: (u8, u8, u8),
     pct_high: u8,
@@ -87,12 +121,18 @@ pub fn compute_pulse_power_bounds(
     let max_pct = (pct_high as f32 / 100.0).clamp(0.0, 1.0);
     let raw_min_pct = (pct_low as f32 / 100.0).clamp(0.0, max_pct);
 
-    let power_high = max_pct.powf(BRIGHTNESS_GAMMA);
-    let mut power_low = raw_min_pct.powf(BRIGHTNESS_GAMMA);
+    if max_pct <= 0.0 {
+        return (0.0, 0.0);
+    }
+
+    let ceiling = hardware_ceiling_for_color(color_srgb);
+    let power_high = max_pct.powf(BRIGHTNESS_GAMMA).min(ceiling);
+    let depth_ratio = (raw_min_pct / max_pct).powf(BRIGHTNESS_GAMMA);
+    let mut power_low = power_high * depth_ratio;
 
     if let Some(c_min) = [color_srgb.0, color_srgb.1, color_srgb.2]
         .into_iter()
-        .filter(|&c| c > 0)
+        .filter(|&c| (c as f32 * power_high).round() >= MIN_ACTIVE_CHANNEL_FLOOR)
         .min()
     {
         let min_power_for_floor = MIN_ACTIVE_CHANNEL_FLOOR / (c_min as f32);
@@ -103,10 +143,32 @@ pub fn compute_pulse_power_bounds(
     (power_high, power_low)
 }
 
+/// Maps a single pulse channel into flicker-free hardware PWM (`{0} U [13..=100]` for normal levels).
+///
+/// Active channels whose peak reaches `MIN_SMOOTH_PULSE_PWM` are floored at `13` throughout the cycle
+/// so they never dip into the `1..=12` beat-flicker zone, while tiny trace channels (`peak < 13`,
+/// such as `G=1, B=1` at `40°C`) are suppressed to `0` so they do not strobe at ~10 Hz.
+fn stabilize_pulse_channel(c: u8, c_max: u8, power_high: f32, power_factor: f32) -> u8 {
+    if c == 0 || c_max == 0 || power_high <= 0.0 {
+        return 0;
+    }
+
+    let peak_val = scale_channel(c, power_high);
+    let raw_val = scale_channel(c, power_factor);
+
+    if peak_val >= MIN_SMOOTH_PULSE_PWM {
+        raw_val.max(MIN_SMOOTH_PULSE_PWM)
+    } else if c < c_max {
+        0
+    } else {
+        raw_val.max(1)
+    }
+}
+
 /// Computes the exact `(r, g, b)` hardware PWM triplet for a pulse cycle at `elapsed_ms`.
 ///
-/// Extracted as a pure function so pulse easing, perceived brightness mapping, and power-bound
-/// clamping can be reasoned about and unit-tested deterministically without HID hardware.
+/// Extracted as a pure function so pulse easing, perceived brightness mapping, and hardware-PWM
+/// stabilization can be reasoned about and unit-tested deterministically without HID hardware.
 pub fn compute_pulse_frame(state: &PulseState, elapsed_ms: u64) -> (u8, u8, u8) {
     let speed_ms = state.speed_ms.max(2);
     let position = elapsed_ms % speed_ms;
@@ -122,7 +184,7 @@ pub fn compute_pulse_frame(state: &PulseState, elapsed_ms: u64) -> (u8, u8, u8) 
     .clamp(0.0, 1.0);
 
     // Raised cosine / shifted sine easing (`0..1`) slows velocity near peaks and troughs
-    // so discrete 8-bit PWM changes are spread smoothly across turnaround frames.
+    // so discrete PWM changes are spread smoothly across turnaround frames.
     let easing =
         (std::f32::consts::PI * linear_progress - std::f32::consts::FRAC_PI_2).sin() * 0.5 + 0.5;
 
@@ -141,7 +203,17 @@ pub fn compute_pulse_frame(state: &PulseState, elapsed_ms: u64) -> (u8, u8, u8) 
     };
 
     let power_factor = current_pct_perceived.powf(BRIGHTNESS_GAMMA);
-    scale_color_with_power(state.color_srgb, power_factor)
+    let c_max = state
+        .color_srgb
+        .0
+        .max(state.color_srgb.1)
+        .max(state.color_srgb.2);
+
+    (
+        stabilize_pulse_channel(state.color_srgb.0, c_max, power_high, power_factor),
+        stabilize_pulse_channel(state.color_srgb.1, c_max, power_high, power_factor),
+        stabilize_pulse_channel(state.color_srgb.2, c_max, power_high, power_factor),
+    )
 }
 
 /// Hardware identification metadata for a connected Busylight USB HID interface.
@@ -263,7 +335,7 @@ impl Busylight {
         self.light(0, 0, 0);
     }
 
-    /// Applies standard sRGB EOTF (`~2.4` gamma) to map an 8-bit sRGB channel to linear PWM.
+    /// Applies standard sRGB EOTF (`~2.4` gamma) to map an 8-bit sRGB channel to linear PWM (`0..=100`).
     fn degamma(val: u8) -> u8 {
         let v = val as f32 / 255.0;
         let corrected = if v <= 0.04045 {
@@ -271,7 +343,9 @@ impl Busylight {
         } else {
             ((v + 0.055) / 1.055).powf(2.4)
         };
-        (corrected * 255.0).clamp(0.0, 255.0).round() as u8
+        (corrected * MAX_HARDWARE_PWM)
+            .clamp(0.0, MAX_HARDWARE_PWM)
+            .round() as u8
     }
 
     /// Writes an unscaled sRGB color using sRGB `degamma` curve (full brightness).
@@ -287,10 +361,13 @@ impl Busylight {
         self.send();
     }
 
-    /// Lights a solid color scaled by the configured perceptual brightness percentage (`0..=100`).
+    /// Lights a solid color scaled by the configured perceptual brightness percentage (`0..=100`),
+    /// clamped by `hardware_ceiling_for_color` so no channel clips above `100` and hue is preserved.
     pub fn light_pct(&mut self, r: u8, g: u8, b: u8, pct: u8) {
         let pct_perceived = (pct as f32 / 100.0).clamp(0.0, 1.0);
-        let power_factor = pct_perceived.powf(BRIGHTNESS_GAMMA);
+        let power_factor = pct_perceived
+            .powf(BRIGHTNESS_GAMMA)
+            .min(hardware_ceiling_for_color((r, g, b)));
         let (r_out, g_out, b_out) = scale_color_with_power((r, g, b), power_factor);
         self.light_raw(r_out, g_out, b_out);
     }
@@ -390,8 +467,6 @@ impl BusylightController {
             let refresh_rate = Duration::from_millis(33);
             let mut cycle_start_time = Instant::now();
             let mut was_active = false;
-            let mut last_sent_rgb: Option<(u8, u8, u8)> = None;
-            let mut last_state: Option<PulseState> = None;
 
             loop {
                 let state = pulse_ctrl.pulse_state.lock().unwrap().clone();
@@ -400,8 +475,6 @@ impl BusylightController {
                     if !was_active {
                         cycle_start_time = Instant::now();
                         was_active = true;
-                        last_sent_rgb = None;
-                        last_state = None;
                     }
 
                     // Guard against near-zero cycle durations causing rapid spin.
@@ -410,31 +483,18 @@ impl BusylightController {
                         continue;
                     }
 
-                    // Invalidate frame deduplication when pulse parameters change mid-cycle.
-                    if last_state.as_ref() != Some(&state) {
-                        last_sent_rgb = None;
-                        last_state = Some(state.clone());
-                    }
-
                     let elapsed_ms = cycle_start_time.elapsed().as_millis() as u64;
                     let frame_voltage = compute_pulse_frame(&state, elapsed_ms);
 
-                    // Skip redundant HID writes at peaks/troughs to prevent hardware PWM phase resets,
-                    // while still honoring the 20-second keep-alive watchdog.
+                    // Emit every 33ms frame steadily without skipping repeated peak/trough values so
+                    // the hardware PWM reset cadence stays uniform and never flashes brighter at turnaround.
                     if let Ok(mut bl) = pulse_ctrl.bl.lock() {
-                        if last_sent_rgb != Some(frame_voltage)
-                            || bl.last_write.elapsed() >= KEEPALIVE_INTERVAL
-                        {
-                            bl.light_raw(frame_voltage.0, frame_voltage.1, frame_voltage.2);
-                            last_sent_rgb = Some(frame_voltage);
-                        }
+                        bl.light_raw(frame_voltage.0, frame_voltage.1, frame_voltage.2);
                     }
 
                     thread::sleep(refresh_rate);
                 } else {
                     was_active = false;
-                    last_sent_rgb = None;
-                    last_state = None;
 
                     let needs_keepalive = pulse_ctrl
                         .bl
@@ -525,56 +585,118 @@ impl BusylightController {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_scale_color_with_power_rounds_and_clamps() {
-        assert_eq!(scale_color_with_power((255, 37, 0), 0.5), (128, 19, 0));
-        assert_eq!(scale_color_with_power((255, 100, 10), 2.0), (255, 200, 20));
-        assert_eq!(scale_color_with_power((0, 0, 0), 0.5), (0, 0, 0));
-    }
-
-    #[test]
-    fn test_pulse_bounds_preserve_hue_and_floor_at_29_3c() {
-        let color_29_3c = (255, 37, 0);
-
-        for (pct_high, pct_low) in [(60, 30), (50, 25)] {
-            let (power_high, power_low) =
-                compute_pulse_power_bounds(color_29_3c, pct_high, pct_low);
-            let peak = scale_color_with_power(color_29_3c, power_high);
-            let trough = scale_color_with_power(color_29_3c, power_low);
-
+    fn assert_no_flicker_zone(frame: (u8, u8, u8)) {
+        for ch in [frame.0, frame.1, frame.2] {
             assert!(
-                trough.1 >= 7,
-                "Expected trough green >= 7 at {}%/{}%, got {:?}",
-                pct_high,
-                pct_low,
-                trough
-            );
-
-            let peak_ratio = peak.1 as f32 / peak.0 as f32;
-            let trough_ratio = trough.1 as f32 / trough.0 as f32;
-            assert!(
-                (0.13..=0.16).contains(&peak_ratio),
-                "Peak G/R ratio out of range: {}",
-                peak_ratio
-            );
-            assert!(
-                (0.13..=0.16).contains(&trough_ratio),
-                "Trough G/R ratio out of range: {}",
-                trough_ratio
+                ch == 0 || (MIN_SMOOTH_PULSE_PWM..=100).contains(&ch),
+                "Channel {} in {:?} fell outside {{0}} U [{}..=100]",
+                ch,
+                frame,
+                MIN_SMOOTH_PULSE_PWM
             );
         }
     }
 
     #[test]
+    fn test_scale_color_with_power_rounds_and_clamps_to_hardware_ceiling() {
+        assert_eq!(scale_color_with_power((255, 37, 0), 0.3), (77, 11, 0));
+        assert_eq!(scale_color_with_power((255, 37, 0), 0.5), (100, 19, 0));
+        assert_eq!(scale_color_with_power((255, 100, 10), 2.0), (100, 100, 20));
+        assert_eq!(scale_color_with_power((0, 0, 0), 0.5), (0, 0, 0));
+    }
+
+    #[test]
+    fn test_pulse_frame_40c_diagnostics_no_saturation_or_trace_flicker() {
+        // 40°C (`#ff0101`): Diagnostics Mode runs at pct_high=100, pct_low=50.
+        // R must modulate cleanly within 0..=100 without clipping, while G=1,B=1 stay suppressed at 0.
+        let state = PulseState {
+            active: true,
+            color_srgb: (255, 1, 1),
+            pct_high: 100,
+            pct_low: 50,
+            speed_ms: 1500,
+        };
+
+        assert_eq!(compute_pulse_frame(&state, 0), (100, 0, 0));
+        assert_eq!(compute_pulse_frame(&state, 750), (35, 0, 0));
+
+        for ms in (0..=1500).step_by(33) {
+            let frame = compute_pulse_frame(&state, ms);
+            assert_no_flicker_zone(frame);
+            assert!((35..=100).contains(&frame.0), "Unexpected R in {:?}", frame);
+            assert_eq!(frame.1, 0);
+            assert_eq!(frame.2, 0);
+        }
+    }
+
+    #[test]
+    fn test_pulse_frame_minus_19c_diagnostics_avoids_flicker_zone() {
+        // -19°C (`#19198c`): B must modulate smoothly within 55..=100 (no clipping above 100),
+        // and R,G must stay within 13..=18 without dipping into the 1..=12 hardware flicker zone.
+        let state = PulseState {
+            active: true,
+            color_srgb: (25, 25, 140),
+            pct_high: 100,
+            pct_low: 50,
+            speed_ms: 1500,
+        };
+
+        assert_eq!(compute_pulse_frame(&state, 0), (18, 18, 100));
+        assert_eq!(compute_pulse_frame(&state, 750), (13, 13, 55));
+
+        for ms in (0..=1500).step_by(33) {
+            let frame = compute_pulse_frame(&state, ms);
+            assert_no_flicker_zone(frame);
+            assert!((13..=18).contains(&frame.0), "Unexpected R in {:?}", frame);
+            assert_eq!(frame.0, frame.1);
+            assert!((55..=100).contains(&frame.2), "Unexpected B in {:?}", frame);
+        }
+    }
+
+    #[test]
+    fn test_pulse_frame_and_bounds_at_29_3c() {
+        let color_29_3c = (255, 38, 0);
+
+        let state_diag = PulseState {
+            active: true,
+            color_srgb: color_29_3c,
+            pct_high: 100,
+            pct_low: 50,
+            speed_ms: 1500,
+        };
+        assert_eq!(compute_pulse_frame(&state_diag, 0), (100, 15, 0));
+        assert_eq!(compute_pulse_frame(&state_diag, 750), (55, 13, 0));
+
+        let state_half = PulseState {
+            active: true,
+            color_srgb: color_29_3c,
+            pct_high: 50,
+            pct_low: 25,
+            speed_ms: 1500,
+        };
+        assert_eq!(compute_pulse_frame(&state_half, 0), (90, 13, 0));
+        assert_eq!(compute_pulse_frame(&state_half, 750), (50, 13, 0));
+
+        for state in [&state_diag, &state_half] {
+            for ms in (0..=1500).step_by(33) {
+                let frame = compute_pulse_frame(state, ms);
+                assert_no_flicker_zone(frame);
+                assert!(frame.1 >= MIN_SMOOTH_PULSE_PWM);
+                assert_eq!(frame.2, 0);
+            }
+        }
+    }
+
+    #[test]
     fn test_pulse_bounds_handle_black_and_extreme_ratios() {
-        // Pure black has no active channels and must yield zero trough without panicking.
+        // Pure black has no active channels and must yield zero output without panicking.
         let (bh, bl) = compute_pulse_power_bounds((0, 0, 0), 60, 30);
         assert!(bh > 0.0);
         assert_eq!(scale_color_with_power((0, 0, 0), bh), (0, 0, 0));
         assert_eq!(scale_color_with_power((0, 0, 0), bl), (0, 0, 0));
 
-        // 39°C (`#ff0100` -> (255, 1, 0)): tiny `c_min = 1` would demand power_low = 7.0 (> 1.0),
-        // so MAX_FLOOR_POWER_RATIO must cap power_low <= 0.55 * power_high to preserve pulse depth.
+        // 39°C (`#ff0100` -> (255, 1, 0)): tiny trace channel G=1 is excluded from the floor filter,
+        // and even for larger secondary channels power_low <= MAX_FLOOR_POWER_RATIO * power_high.
         let (eh, el) = compute_pulse_power_bounds((255, 1, 0), 60, 30);
         assert!(
             el <= eh * MAX_FLOOR_POWER_RATIO + 1e-6,
@@ -591,7 +713,7 @@ mod tests {
     #[test]
     fn test_degamma_curve_monotonic_and_endpoints() {
         assert_eq!(Busylight::degamma(0), 0);
-        assert_eq!(Busylight::degamma(255), 255);
+        assert_eq!(Busylight::degamma(255), 100);
 
         let mut prev = 0u8;
         for v in 0..=255u8 {
@@ -603,6 +725,7 @@ mod tests {
                 d,
                 prev
             );
+            assert!(d <= 100);
             prev = d;
         }
     }

@@ -316,9 +316,11 @@ pub fn run() {
 
 /// Formats the system tray hover tooltip (`"<City>: <Temp>°<Unit> [(<Precip Alert>)] [(Night)]"`).
 ///
-/// Uses `weather.precip_summary` when available (e.g., `"Heavy rain 38% likely at 6:00 PM"`),
-/// falling back to `"Precip"`. Converts Celsius `weather.temperature` into `config.unit`
-/// (`"C"` or `"F"`) before rounding and normalizes `-0.0` so freezing transitions near zero never display `"-0°C"`.
+/// Uses `weather.precip_summary` whenever precipitation is active now or within the next 24 hours
+/// (e.g., `"Light rain until 5:00 PM"` or `"Light rain starting at 6:00 PM"`), independent of the LED
+/// pulse trigger horizon, falling back to `"Precip"` only when pulsing without a summary.
+/// Converts Celsius `weather.temperature` into `config.unit` (`"C"` or `"F"`) before rounding
+/// and normalizes `-0.0` so freezing transitions near zero never display `"-0°C"`.
 pub fn format_tray_tooltip(weather: &WeatherState, config: &AppConfig) -> String {
     let display_temp = config.format_temperature(weather.temperature).round() + 0.0;
     let is_night_mode = config.sunset_sunrise && weather.is_night;
@@ -329,9 +331,10 @@ pub fn format_tray_tooltip(weather: &WeatherState, config: &AppConfig) -> String
         .unwrap_or(&weather.location_name);
 
     let mut tooltip = format!("{}: {}°{}", short_location, display_temp, config.unit);
-    if weather.has_precipitation {
-        let detail = weather.precip_summary.as_deref().unwrap_or("Precip");
+    if let Some(detail) = weather.precip_summary.as_deref() {
         tooltip.push_str(&format!(" ({})", detail));
+    } else if weather.has_precipitation {
+        tooltip.push_str(" (Precip)");
     }
     if is_night_mode {
         tooltip.push_str(" (Night)");
@@ -478,6 +481,14 @@ mod tests {
         assert_eq!(
             format_tray_tooltip(&ws_fallback, &cfg),
             "Havelock North: 68°F (Precip)"
+        );
+
+        // Tooltip still displays upcoming 24h precipitation even when `has_precipitation` is false
+        // (e.g., user chose "None" or "Immediate" pulsing horizon while rain starts in 6 hours).
+        let ws_future_only = sample_weather(20.0, false, Some("Light rain starting at 6:00 PM"), false);
+        assert_eq!(
+            format_tray_tooltip(&ws_future_only, &cfg),
+            "Havelock North: 68°F (Light rain starting at 6:00 PM)"
         );
 
         // Near-zero negative temperatures must format as "0°C", never "-0°C".

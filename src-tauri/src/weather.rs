@@ -151,17 +151,31 @@ pub fn is_precip_triggered(prob_pct: f64, rain_mm: f64, showers_mm: f64, snow_mm
 /// Classifies precipitation type and intensity (`Light`/`Moderate`/`Heavy`) from hourly mm rates,
 /// probability threshold, and temperature fallback.
 ///
-/// When deterministic accumulation is `0.0 mm/hr` but `prob_pct >= 35%`, falls back to `"Snow"`
-/// (`temp_c <= 0.0`) or `"Rain"` (`temp_c > 0.0`). Returns `"None"` when below thresholds.
+/// - When `!is_precip_triggered` (`< 35%` and `< 0.5 mm/hr`): returns `"Low chance of rain"` /
+///   `"Low chance of snow"` if probability is non-zero (`>= 1%`) or trace moisture is present,
+///   or `"None"` at `0%` with `0.0 mm/hr`.
+/// - When `is_precip_triggered`: returns an intensity-qualified label (`Light`/`Moderate`/`Heavy`)
+///   or `"Snow"` / `"Rain"` fallback when deterministic accumulation is `0.0 mm/hr`.
 pub fn classify_precip_label(
     temp_c: f64,
     prob_pct: f64,
     rain_mm_hr: f64,
     snow_mm_hr: f64,
 ) -> String {
-    if snow_mm_hr > 0.0
-        || (rain_mm_hr <= 0.0 && prob_pct >= PRECIP_PROB_THRESHOLD_PCT && temp_c <= 0.0)
-    {
+    let is_wintry = snow_mm_hr > 0.0 || (rain_mm_hr <= 0.0 && temp_c <= 0.0);
+
+    if !is_precip_triggered(prob_pct, rain_mm_hr, 0.0, snow_mm_hr) {
+        if prob_pct.round() >= 1.0 || rain_mm_hr > 0.0 || snow_mm_hr > 0.0 {
+            return if is_wintry {
+                "Low chance of snow".to_string()
+            } else {
+                "Low chance of rain".to_string()
+            };
+        }
+        return "None".to_string();
+    }
+
+    if is_wintry {
         if snow_mm_hr >= 2.5 {
             "Heavy snow".to_string()
         } else if snow_mm_hr >= 1.0 {
@@ -171,18 +185,14 @@ pub fn classify_precip_label(
         } else {
             "Snow".to_string()
         }
-    } else if rain_mm_hr > 0.0 || prob_pct >= PRECIP_PROB_THRESHOLD_PCT {
-        if rain_mm_hr >= 7.6 {
-            "Heavy rain".to_string()
-        } else if rain_mm_hr >= 2.5 {
-            "Moderate rain".to_string()
-        } else if rain_mm_hr > 0.0 {
-            "Light rain".to_string()
-        } else {
-            "Rain".to_string()
-        }
+    } else if rain_mm_hr >= 7.6 {
+        "Heavy rain".to_string()
+    } else if rain_mm_hr >= 2.5 {
+        "Moderate rain".to_string()
+    } else if rain_mm_hr > 0.0 {
+        "Light rain".to_string()
     } else {
-        "None".to_string()
+        "Rain".to_string()
     }
 }
 
@@ -194,17 +204,159 @@ pub fn format_local_clock(dt_utc: DateTime<Utc>) -> String {
     format!("{}:{:02} {}", hour12, local_dt.minute(), suffix)
 }
 
+/// Formats `target_utc` as a 12-hour local clock string qualified by its local calendar day
+/// relative to `ref_utc` (`"5:00 PM"`, `"9:00 AM tomorrow"`, or `"3:00 PM Friday"`).
+pub fn format_relative_clock(target_utc: DateTime<Utc>, ref_utc: DateTime<Utc>) -> String {
+    let clock = format_local_clock(target_utc);
+    let target_local = target_utc.with_timezone(&Local);
+    let ref_local = ref_utc.with_timezone(&Local);
+    let days_ahead = (target_local.date_naive() - ref_local.date_naive()).num_days();
+
+    if days_ahead <= 0 {
+        clock
+    } else if days_ahead == 1 {
+        format!("{} tomorrow", clock)
+    } else {
+        format!("{} {}", clock, target_local.format("%A"))
+    }
+}
+
 /// Formats a precipitation alert string for tooltips and Diagnostics status.
 ///
-/// Examples: `"Heavy rain 38% likely at 6:00 PM"`, `"Light rain 60% likely now"`, `"Moderate rain now"`.
-pub fn format_precip_alert(label: &str, prob_pct: f64, time_local_str: Option<&str>) -> String {
-    let prob = prob_pct.round().clamp(0.0, 100.0) as u32;
-    match (time_local_str, prob > 0) {
-        (Some(t), true) => format!("{} {}% likely at {}", label, prob, t),
-        (Some(t), false) => format!("{} at {}", label, t),
-        (None, true) => format!("{} {}% likely now", label, prob),
-        (None, false) => format!("{} now", label),
+/// Examples: `"Heavy rain starting at 6:00 PM"`, `"Light rain starting at 9:00 AM tomorrow"`, `"Moderate rain now"`.
+pub fn format_precip_alert(label: &str, _prob_pct: f64, time_local_str: Option<&str>) -> String {
+    match time_local_str {
+        Some(t) => format!("{} starting at {}", label, t),
+        None => format!("{} now", label),
     }
+}
+
+/// Returns `true` when two active precipitation labels represent a distinct change in type
+/// or intensity (e.g., `"Light rain"` -> `"Heavy rain"` or `"Light rain"` -> `"Light snow"`),
+/// while ignoring sub-threshold (`"Low chance..."` / `"None"`) and fallback `"Rain"` / `"Snow"`
+/// labels on probability-only slots.
+fn is_meaningful_precip_change(current_label: &str, next_label: &str) -> bool {
+    if current_label == next_label
+        || next_label == "None"
+        || next_label.starts_with("Low chance")
+    {
+        return false;
+    }
+    if next_label == "Rain" && current_label.ends_with("rain") {
+        return false;
+    }
+    if next_label == "Snow" && current_label.ends_with("snow") {
+        return false;
+    }
+    true
+}
+
+/// Evaluates LED pulsing (`has_precipitation`) across `forecast[0..horizon_slots]` and the
+/// 24-hour tooltip/Diagnostics alert (`precip_summary`) across the next 24 hours of `forecast`.
+///
+/// - `has_precipitation` strictly honors the user's configured pulse `horizon_slots` so the LED
+///   only pulses per their setting.
+/// - `precip_summary` scans up to 24 hours ahead regardless of pulse setting:
+///   - If active in slot `0` (now), scans forward across the full multi-day `forecast` for phase
+///     transitions and the first dry slot (e.g., `"Light rain until 2:00 PM, then heavy rain until 5:00 PM"`,
+///     `"Heavy rain until 9:00 AM tomorrow"`, or `"Heavy rain indefinitely"`).
+///   - If dry now but precipitation appears within the next 24 hours, reports
+///     `"<Label> starting at <Time>"`.
+///   - Returns `None` if no precipitation is forecast in the next 24 hours.
+pub fn evaluate_forecast_precip(
+    forecast: &[ForecastItem],
+    horizon_slots: usize,
+    slot_step_hours: i64,
+) -> (bool, Option<String>) {
+    if forecast.is_empty() {
+        return (false, None);
+    }
+
+    let ref_time = forecast[0].time;
+    let step = (slot_step_hours.max(1)) as f64;
+    let is_slot_wet = |slot: &ForecastItem| -> bool {
+        is_precip_triggered(
+            slot.precip_prob,
+            slot.rain_mm_hr * step,
+            0.0,
+            slot.snow_mm_hr * step,
+        )
+    };
+
+    let pulse_limit = std::cmp::min(horizon_slots, forecast.len());
+    let has_precipitation = forecast[0..pulse_limit].iter().any(&is_slot_wet);
+
+    let lookahead_24h = (24 / slot_step_hours.max(1) as usize).max(1);
+    let summary_limit = std::cmp::min(lookahead_24h.max(horizon_slots), forecast.len());
+
+    for (idx, slot) in forecast[0..summary_limit].iter().enumerate() {
+        if is_slot_wet(slot) {
+            if idx == 0 {
+                let current_label = &slot.precip_type;
+                let first_dry_idx = forecast[1..]
+                    .iter()
+                    .position(|s| !is_slot_wet(s))
+                    .map(|pos| pos + 1);
+                let wet_slice = &forecast[0..first_dry_idx.unwrap_or(forecast.len())];
+                let transition = wet_slice[1..]
+                    .iter()
+                    .find(|s| is_meaningful_precip_change(current_label, &s.precip_type));
+
+                if let Some(dry_i) = first_dry_idx {
+                    let end_time = format_relative_clock(forecast[dry_i].time, ref_time);
+                    if let Some(change_slot) = transition {
+                        let change_time = format_relative_clock(change_slot.time, ref_time);
+                        let next_label = change_slot.precip_type.to_lowercase();
+                        return (
+                            has_precipitation,
+                            Some(format!(
+                                "{} until {}, then {} until {}",
+                                current_label, change_time, next_label, end_time
+                            )),
+                        );
+                    }
+                    return (
+                        has_precipitation,
+                        Some(format!("{} until {}", current_label, end_time)),
+                    );
+                } else if forecast.len() == 1 {
+                    let end_dt = slot.time + chrono::Duration::hours(slot_step_hours.max(1));
+                    let end_time = format_relative_clock(end_dt, ref_time);
+                    return (
+                        has_precipitation,
+                        Some(format!("{} until {}", current_label, end_time)),
+                    );
+                } else if let Some(change_slot) = transition {
+                    let change_time = format_relative_clock(change_slot.time, ref_time);
+                    let next_label = change_slot.precip_type.to_lowercase();
+                    return (
+                        has_precipitation,
+                        Some(format!(
+                            "{} until {}, then {} indefinitely",
+                            current_label, change_time, next_label
+                        )),
+                    );
+                } else {
+                    return (
+                        has_precipitation,
+                        Some(format!("{} indefinitely", current_label)),
+                    );
+                }
+            } else {
+                let start_time = format_relative_clock(slot.time, ref_time);
+                return (
+                    has_precipitation,
+                    Some(format_precip_alert(
+                        &slot.precip_type,
+                        slot.precip_prob,
+                        Some(&start_time),
+                    )),
+                );
+            }
+        }
+    }
+
+    (has_precipitation, None)
 }
 
 /// Extracts `(pop_pct, rain_3h_mm, snow_3h_mm)` from an OpenWeatherMap 3-hour forecast item.
@@ -350,9 +502,21 @@ pub fn blend_weather_states(
     };
     let is_night = check_is_night_at(&sun_times, Utc::now());
 
+    let owm_horizon_end = owm
+        .debug_forecast
+        .last()
+        .map(|s| s.time + chrono::Duration::hours(3));
+
     // Anchor the blended forecast curve to Open-Meteo's 1-hour UTC timestamps.
     let mut blended_forecast = Vec::with_capacity(om.debug_forecast.len());
     for (idx, om_slot) in om.debug_forecast.iter().enumerate() {
+        // Beyond OWM's 5-day horizon, keep Open-Meteo's extended hourly values directly
+        // instead of clamping days 6-7 to OWM's day-5 endpoint.
+        if matches!(owm_horizon_end, Some(end_dt) if om_slot.time > end_dt) {
+            blended_forecast.push(om_slot.clone());
+            continue;
+        }
+
         let (owm_temp, owm_prob, owm_rain, owm_snow) =
             interpolate_owm_slot_at(&owm.debug_forecast, om_slot.time, owm.temperature);
 
@@ -416,27 +580,8 @@ pub fn blend_weather_states(
             .fold(f64::NEG_INFINITY, f64::max)
     };
 
-    let mut has_precipitation = false;
-    let mut precip_summary: Option<String> = None;
-    if precip_hours > 0 {
-        let precip_limit = std::cmp::min(precip_hours, blended_forecast.len());
-        for (idx, slot) in blended_forecast[0..precip_limit].iter().enumerate() {
-            if is_precip_triggered(slot.precip_prob, slot.rain_mm_hr, 0.0, slot.snow_mm_hr) {
-                has_precipitation = true;
-                let time_str = if idx == 0 {
-                    None
-                } else {
-                    Some(format_local_clock(slot.time))
-                };
-                precip_summary = Some(format_precip_alert(
-                    &slot.precip_type,
-                    slot.precip_prob,
-                    time_str.as_deref(),
-                ));
-                break;
-            }
-        }
-    }
+    let (has_precipitation, precip_summary) =
+        evaluate_forecast_precip(&blended_forecast, precip_hours, 1);
 
     let provider_feeds = build_provider_feeds(
         temperature,
@@ -464,6 +609,8 @@ pub fn blend_weather_states(
 /// HTTP weather and geolocation client shared across background polling and Tauri commands.
 pub struct WeatherService {
     client: Client,
+    /// In-memory cache `(provider:location, coords)` avoiding repeat geocoding calls every poll.
+    geo_cache: std::sync::Mutex<Option<(String, LocationDetectResult)>>,
 }
 
 impl WeatherService {
@@ -474,6 +621,7 @@ impl WeatherService {
                 .timeout(Duration::from_secs(10))
                 .build()
                 .unwrap_or_else(|_| Client::new()),
+            geo_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -490,27 +638,48 @@ impl WeatherService {
             }
         }
 
-        // 2. Fall back to geocoding the manual location string if needed.
+        // 2. Fall back to geocoding the manual location string if needed (cached per provider + location).
         if lat.is_none() && !config.location.is_empty() {
-            let geo = if config.provider == "openweathermap" && !config.api_key.is_empty() {
-                self.geocode_openweathermap(&config.location, &config.api_key)
-                    .await
-            } else if config.provider == "both" && !config.api_key.is_empty() {
-                match self.geocode_openmeteo(&config.location).await {
-                    Ok(Some(found)) => Ok(Some(found)),
-                    _ => {
-                        self.geocode_openweathermap(&config.location, &config.api_key)
-                            .await
-                    }
-                }
-            } else {
-                self.geocode_openmeteo(&config.location).await
-            };
+            let cache_key = format!(
+                "{}:{}",
+                config.provider,
+                config.location.trim().to_lowercase()
+            );
+            let cached = self.geo_cache.lock().ok().and_then(|guard| {
+                guard
+                    .as_ref()
+                    .filter(|(k, _)| k == &cache_key)
+                    .map(|(_, res)| res.clone())
+            });
 
-            if let Ok(Some(found)) = geo {
+            if let Some(found) = cached {
                 lat = Some(found.lat);
                 lon = Some(found.lon);
                 location_name = Some(found.city);
+            } else {
+                let geo = if config.provider == "openweathermap" && !config.api_key.is_empty() {
+                    self.geocode_openweathermap(&config.location, &config.api_key)
+                        .await
+                } else if config.provider == "both" && !config.api_key.is_empty() {
+                    match self.geocode_openmeteo(&config.location).await {
+                        Ok(Some(found)) => Ok(Some(found)),
+                        _ => {
+                            self.geocode_openweathermap(&config.location, &config.api_key)
+                                .await
+                        }
+                    }
+                } else {
+                    self.geocode_openmeteo(&config.location).await
+                };
+
+                if let Ok(Some(found)) = geo {
+                    if let Ok(mut guard) = self.geo_cache.lock() {
+                        *guard = Some((cache_key, found.clone()));
+                    }
+                    lat = Some(found.lat);
+                    lon = Some(found.lon);
+                    location_name = Some(found.city);
+                }
             }
         }
 
@@ -855,43 +1024,10 @@ impl WeatherService {
             }
         }
 
-        let mut has_precipitation = false;
-        let mut precip_summary: Option<String> = None;
-        if precip_blocks > 0 && !list.is_empty() {
-            let limit = std::cmp::min(precip_blocks, list.len());
-            for (idx, item) in list[0..limit].iter().enumerate() {
-                let (pop_pct, rain_3h, snow_3h) = extract_owm_precip(item);
-
-                if is_precip_triggered(pop_pct, rain_3h, 0.0, snow_3h) {
-                    has_precipitation = true;
-                    let slot_temp = item
-                        .get("main")
-                        .and_then(|v| v.get("temp"))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(temperature);
-                    let slot_dt = item
-                        .get("dt")
-                        .and_then(|v| v.as_i64())
-                        .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
-                        .unwrap_or_else(Utc::now);
-
-                    let label =
-                        classify_precip_label(slot_temp, pop_pct, rain_3h / 3.0, snow_3h / 3.0);
-                    let time_str = if idx == 0 {
-                        None
-                    } else {
-                        Some(format_local_clock(slot_dt))
-                    };
-                    precip_summary = Some(format_precip_alert(&label, pop_pct, time_str.as_deref()));
-                    break;
-                }
-            }
-        }
-
-        // Build Diagnostics forecast table (up to 16 x 3h blocks = 48h).
+        // Retain the complete multi-day forecast (all 3-hour blocks returned by OWM, up to 40 / 5 days)
+        // for transition/end-of-precip detection and the Diagnostics table.
         let mut debug_forecast = Vec::new();
-        let limit = std::cmp::min(16, list.len());
-        for item in &list[0..limit] {
+        for item in list.iter() {
             let time_val = item.get("dt").and_then(|v| v.as_i64()).unwrap_or(0);
             let temp_val = item
                 .get("main")
@@ -901,7 +1037,13 @@ impl WeatherService {
             let (pop_val, rain_3h, snow_3h) = extract_owm_precip(item);
             let rain_mm_hr = rain_3h / 3.0;
             let snow_mm_hr = snow_3h / 3.0;
-            let precip_type = classify_precip_label(temp_val, pop_val, rain_mm_hr, snow_mm_hr);
+            let effective_prob = if is_precip_triggered(pop_val, rain_3h, 0.0, snow_3h) {
+                pop_val.max(PRECIP_PROB_THRESHOLD_PCT)
+            } else {
+                pop_val
+            };
+            let precip_type =
+                classify_precip_label(temp_val, effective_prob, rain_mm_hr, snow_mm_hr);
 
             debug_forecast.push(ForecastItem {
                 time: Utc.timestamp_opt(time_val, 0).single().unwrap_or_else(Utc::now),
@@ -912,6 +1054,9 @@ impl WeatherService {
                 snow_mm_hr,
             });
         }
+
+        let (has_precipitation, precip_summary) =
+            evaluate_forecast_precip(&debug_forecast, precip_blocks, 3);
 
         let is_night = self.check_is_night(&sun_times);
         Ok(WeatherState {
@@ -937,7 +1082,7 @@ impl WeatherService {
         config: &AppConfig,
     ) -> Result<WeatherState, String> {
         let url = format!(
-            "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&hourly=temperature_2m,precipitation_probability,rain,showers,snowfall&daily=sunrise,sunset&timezone=GMT&forecast_days=2",
+            "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&hourly=temperature_2m,precipitation_probability,rain,showers,snowfall&daily=sunrise,sunset&timezone=GMT&forecast_days=7",
             lat, lon
         );
         let resp = self.client.get(&url).send().await.map_err(|e| e.to_string())?;
@@ -1019,60 +1164,11 @@ impl WeatherService {
             }
         }
 
-        let mut has_precipitation = false;
-        let mut precip_summary: Option<String> = None;
-        if precip_hours > 0 {
-            if let Some(p_arr) = hourly_probs {
-                let limit = std::cmp::min(p_arr.len(), current_hour_index + precip_hours);
-                for i in current_hour_index..limit {
-                    let prob_val = p_arr[i].as_f64().unwrap_or(0.0);
-                    let rain_val = hourly_rain
-                        .and_then(|arr| arr.get(i))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-                    let show_val = hourly_showers
-                        .and_then(|arr| arr.get(i))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-                    let snow_val = hourly_snow
-                        .and_then(|arr| arr.get(i))
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0);
-
-                    if is_precip_triggered(prob_val, rain_val, show_val, snow_val) {
-                        has_precipitation = true;
-                        let slot_temp = hourly_temps
-                            .and_then(|arr| arr.get(i))
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(temperature);
-                        let label = classify_precip_label(
-                            slot_temp,
-                            prob_val,
-                            rain_val + show_val,
-                            snow_val,
-                        );
-                        let time_str = if i == current_hour_index {
-                            None
-                        } else {
-                            hourly_times
-                                .and_then(|arr| arr.get(i))
-                                .and_then(|v| v.as_str())
-                                .and_then(parse_openmeteo_gmt_timestamp)
-                                .map(format_local_clock)
-                        };
-                        precip_summary =
-                            Some(format_precip_alert(&label, prob_val, time_str.as_deref()));
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Build Diagnostics forecast table (next 24 hours from current GMT hour).
+        // Retain the complete multi-day forecast (all hours from current GMT hour through day 7)
+        // for transition/end-of-precip detection and the Diagnostics table.
         let mut debug_forecast = Vec::new();
         if let (Some(t_arr), Some(temp_arr)) = (hourly_times, hourly_temps) {
-            let limit = std::cmp::min(t_arr.len(), current_hour_index + 24);
-            for i in current_hour_index..limit {
+            for i in current_hour_index..t_arr.len() {
                 if let Some(t_str) = t_arr[i].as_str() {
                     let dt = parse_openmeteo_gmt_timestamp(t_str).unwrap_or_else(Utc::now);
                     let t_val = temp_arr.get(i).and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -1110,6 +1206,9 @@ impl WeatherService {
                 }
             }
         }
+
+        let (has_precipitation, precip_summary) =
+            evaluate_forecast_precip(&debug_forecast, precip_hours, 1);
 
         let is_night = self.check_is_night(&sun_times);
         Ok(WeatherState {
@@ -1237,15 +1336,24 @@ mod tests {
 
     #[test]
     fn test_classify_precip_label_intensities_and_fallbacks() {
-        // Below thresholds -> "None"
-        assert_eq!(classify_precip_label(20.0, 25.0, 0.0, 0.0), "None");
+        // Zero probability & zero trace -> "None"
+        assert_eq!(classify_precip_label(20.0, 0.0, 0.0, 0.0), "None");
+
+        // Sub-threshold probability/trace (< 35% and < 0.5 mm/hr) -> "Low chance of rain" / "Low chance of snow"
+        assert_eq!(classify_precip_label(20.0, 25.0, 0.0, 0.0), "Low chance of rain");
+        assert_eq!(classify_precip_label(12.8, 32.0, 0.1, 0.0), "Low chance of rain");
+        assert_eq!(classify_precip_label(14.4, 19.0, 0.05, 0.0), "Low chance of rain");
+        assert_eq!(classify_precip_label(-2.0, 20.0, 0.0, 0.0), "Low chance of snow");
+        assert_eq!(classify_precip_label(-1.0, 15.0, 0.0, 0.1), "Low chance of snow");
 
         // Probability >= 35% with 0.0mm deterministic accumulation falls back cleanly by temp
         assert_eq!(classify_precip_label(18.0, 45.0, 0.0, 0.0), "Rain");
         assert_eq!(classify_precip_label(0.0, 45.0, 0.0, 0.0), "Snow");
         assert_eq!(classify_precip_label(-3.5, 45.0, 0.0, 0.0), "Snow");
 
-        // Rain intensity tiers (mm/hr)
+        // Rain intensity tiers (mm/hr) when triggered
+        assert_eq!(classify_precip_label(12.6, 47.0, 0.1, 0.0), "Light rain");
+        assert_eq!(classify_precip_label(12.8, 20.0, 0.5, 0.0), "Light rain");
         assert_eq!(classify_precip_label(15.0, 60.0, 0.8, 0.0), "Light rain");
         assert_eq!(classify_precip_label(15.0, 60.0, 2.5, 0.0), "Moderate rain");
         assert_eq!(classify_precip_label(15.0, 60.0, 7.6, 0.0), "Heavy rain");
@@ -1260,15 +1368,15 @@ mod tests {
     fn test_format_precip_alert_now_and_future() {
         assert_eq!(
             format_precip_alert("Heavy rain", 38.4, Some("6:00 PM")),
-            "Heavy rain 38% likely at 6:00 PM"
+            "Heavy rain starting at 6:00 PM"
         );
         assert_eq!(
             format_precip_alert("Light rain", 60.0, None),
-            "Light rain 60% likely now"
+            "Light rain now"
         );
         assert_eq!(
-            format_precip_alert("Moderate rain", 0.0, Some("7:00 PM")),
-            "Moderate rain at 7:00 PM"
+            format_precip_alert("Moderate rain", 0.0, Some("9:00 AM tomorrow")),
+            "Moderate rain starting at 9:00 AM tomorrow"
         );
         assert_eq!(
             format_precip_alert("Moderate rain", 0.0, None),
@@ -1386,7 +1494,8 @@ mod tests {
         };
 
         // 1. Immediate/current horizons: OWM's premature 40% at hour 0 is suppressed by Open-Meteo's 0%,
-        //    and current temp blends 55% live OWM (22.0) + 45% Open-Meteo (20.0) = 21.1°C.
+        //    so `has_precipitation` stays `false` for the 1h pulse horizon while the 24h tooltip
+        //    still alerts the user that Light rain starts at +2h.
         let mut cfg = AppConfig::default();
         cfg.provider = "both".to_string();
         cfg.temp_horizon = "current".to_string();
@@ -1396,10 +1505,16 @@ mod tests {
         assert_eq!(blended_now.provider, "Combined (Open-Meteo + OWM)");
         assert!((blended_now.temperature - 21.1).abs() < 1e-6);
         assert!(!blended_now.has_precipitation);
-        assert_eq!(blended_now.precip_summary, None);
+        assert_eq!(
+            blended_now.precip_summary,
+            Some(format!(
+                "Light rain starting at {}",
+                format_relative_clock(t2, t0)
+            ))
+        );
 
         // 2. Short-term (6h) horizons: high temp rounds cleanly to 24.3°C at +2h,
-        //    and precipitation triggers sharply at +2h where both models agree (51% likely).
+        //    and precipitation triggers pulsing sharply at +2h where both models agree.
         cfg.temp_horizon = "short_high".to_string();
         cfg.precip_horizon = "short".to_string();
 
@@ -1409,7 +1524,10 @@ mod tests {
         assert!(blended_short.has_precipitation);
         assert_eq!(
             blended_short.precip_summary,
-            Some(format!("Light rain 51% likely at {}", format_local_clock(t2)))
+            Some(format!(
+                "Light rain starting at {}",
+                format_relative_clock(t2, t0)
+            ))
         );
 
         // 3. Diagnostics tabs preserve all 3 feed snapshots (blended + both upstream raw feeds).
@@ -1427,6 +1545,217 @@ mod tests {
         assert_eq!(
             blended_short.provider_feeds[2].precip_summary.as_deref(),
             Some("Rain 40% likely now")
+        );
+    }
+
+    #[test]
+    fn test_evaluate_forecast_precip_current_until_and_future_at() {
+        // Anchor at local 11:00 AM so +6h stays today (5:00 PM), +22h crosses into tomorrow (9:00 AM),
+        // and +48h lands two calendar days later (weekday name).
+        let t0 = Local
+            .with_ymd_and_hms(2026, 11, 18, 11, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let t1 = t0 + chrono::Duration::hours(1);
+        let t_same_day = t0 + chrono::Duration::hours(6);
+        let t_tomorrow = t0 + chrono::Duration::hours(22);
+        let t_two_days = t0 + chrono::Duration::hours(48);
+        let two_days_weekday = t_two_days.with_timezone(&Local).format("%A").to_string();
+
+        let wet_now = ForecastItem {
+            time: t0,
+            temp: 18.0,
+            precip_prob: 80.0,
+            precip_type: "Heavy rain".to_string(),
+            rain_mm_hr: 8.5,
+            snow_mm_hr: 0.0,
+        };
+        let wet_next = ForecastItem {
+            time: t1,
+            temp: 17.5,
+            precip_prob: 75.0,
+            precip_type: "Heavy rain".to_string(),
+            rain_mm_hr: 8.0,
+            snow_mm_hr: 0.0,
+        };
+        let dry_slot = |time: DateTime<Utc>| ForecastItem {
+            time,
+            temp: 17.0,
+            precip_prob: 15.0,
+            precip_type: "Low chance of rain".to_string(),
+            rain_mm_hr: 0.0,
+            snow_mm_hr: 0.0,
+        };
+
+        // 1. Same-day clearing even when horizon_slots == 1 ("immediate").
+        assert_eq!(
+            evaluate_forecast_precip(&[wet_now.clone(), wet_next.clone(), dry_slot(t_same_day)], 1, 1),
+            (
+                true,
+                Some(format!(
+                    "Heavy rain until {}",
+                    format_local_clock(t_same_day)
+                ))
+            )
+        );
+
+        // 2. Tomorrow clearing adds "tomorrow" (e.g., "Heavy rain until 9:00 AM tomorrow").
+        assert_eq!(
+            evaluate_forecast_precip(&[wet_now.clone(), wet_next.clone(), dry_slot(t_tomorrow)], 1, 1),
+            (
+                true,
+                Some(format!(
+                    "Heavy rain until {} tomorrow",
+                    format_local_clock(t_tomorrow)
+                ))
+            )
+        );
+
+        // 3. Multi-day (2+ days ahead) clearing appends the weekday name.
+        assert_eq!(
+            evaluate_forecast_precip(&[wet_now.clone(), wet_next.clone(), dry_slot(t_two_days)], 1, 1),
+            (
+                true,
+                Some(format!(
+                    "Heavy rain until {} {}",
+                    format_local_clock(t_two_days),
+                    two_days_weekday
+                ))
+            )
+        );
+
+        // 4. Dry now, wet tomorrow:
+        //    - With 24h pulse horizon: `has_precipitation == true` and "Light rain starting at 9:00 AM tomorrow".
+        //    - With 1h pulse horizon ("immediate") or 0h ("none"): `has_precipitation == false`,
+        //      yet the 24h tooltip summary still reports "Light rain starting at 9:00 AM tomorrow".
+        let future_rain = vec![
+            dry_slot(t0),
+            ForecastItem {
+                time: t_tomorrow,
+                temp: 19.0,
+                precip_prob: 50.0,
+                precip_type: "Light rain".to_string(),
+                rain_mm_hr: 1.0,
+                snow_mm_hr: 0.0,
+            },
+        ];
+        let expected_future = Some(format!(
+            "Light rain starting at {} tomorrow",
+            format_local_clock(t_tomorrow)
+        ));
+        assert_eq!(evaluate_forecast_precip(&future_rain, 24, 1), (true, expected_future.clone()));
+        assert_eq!(evaluate_forecast_precip(&future_rain, 1, 1), (false, expected_future.clone()));
+        assert_eq!(evaluate_forecast_precip(&future_rain, 0, 1), (false, expected_future));
+
+        // 4b. Dry across the entire next 24 hours (with rain only beyond hour 24) yields `(false, None)`.
+        let mut dry_24h: Vec<ForecastItem> = (0..24)
+            .map(|h| dry_slot(t0 + chrono::Duration::hours(h)))
+            .collect();
+        dry_24h.push(ForecastItem {
+            time: t0 + chrono::Duration::hours(24),
+            temp: 18.0,
+            precip_prob: 80.0,
+            precip_type: "Moderate rain".to_string(),
+            rain_mm_hr: 3.0,
+            snow_mm_hr: 0.0,
+        });
+        assert_eq!(evaluate_forecast_precip(&dry_24h, 6, 1), (false, None));
+
+        // 5. OWM 3-hour slot scaling (`0.25 mm/hr * 3h = 0.75 mm >= 0.5 mm`) triggers and finds dry block.
+        let t_owm_end = t0 + chrono::Duration::hours(3);
+        let owm_blocks = vec![
+            ForecastItem {
+                time: t0,
+                temp: 16.0,
+                precip_prob: 20.0,
+                precip_type: "Light rain".to_string(),
+                rain_mm_hr: 0.25,
+                snow_mm_hr: 0.0,
+            },
+            dry_slot(t_owm_end),
+        ];
+        assert_eq!(
+            evaluate_forecast_precip(&owm_blocks, 1, 3),
+            (
+                true,
+                Some(format!("Light rain until {}", format_local_clock(t_owm_end)))
+            )
+        );
+
+        // 6. All slots wet through the end of the extended window falls back to "... indefinitely".
+        assert_eq!(
+            evaluate_forecast_precip(&[wet_now, wet_next], 1, 1),
+            (true, Some("Heavy rain indefinitely".to_string()))
+        );
+
+        // 7. Precipitation phase transitions (e.g., Light rain -> Heavy rain -> Dry / Indefinite).
+        let t_shift = t0 + chrono::Duration::hours(3);
+        let light_now = ForecastItem {
+            time: t0,
+            temp: 15.0,
+            precip_prob: 70.0,
+            precip_type: "Light rain".to_string(),
+            rain_mm_hr: 0.8,
+            snow_mm_hr: 0.0,
+        };
+        let prob_only_rain = ForecastItem {
+            time: t1,
+            temp: 15.0,
+            precip_prob: 50.0,
+            precip_type: "Rain".to_string(),
+            rain_mm_hr: 0.0,
+            snow_mm_hr: 0.0,
+        };
+        let heavy_later = ForecastItem {
+            time: t_shift,
+            temp: 14.0,
+            precip_prob: 90.0,
+            precip_type: "Heavy rain".to_string(),
+            rain_mm_hr: 9.0,
+            snow_mm_hr: 0.0,
+        };
+
+        // Transition followed by clearing (+6h = 5:00 PM) ignores the intermediate prob-only "Rain".
+        assert_eq!(
+            evaluate_forecast_precip(
+                &[
+                    light_now.clone(),
+                    prob_only_rain.clone(),
+                    heavy_later.clone(),
+                    dry_slot(t_same_day),
+                ],
+                1,
+                1
+            ),
+            (
+                true,
+                Some(format!(
+                    "Light rain until {}, then heavy rain until {}",
+                    format_local_clock(t_shift),
+                    format_local_clock(t_same_day)
+                ))
+            )
+        );
+
+        // Transition that continues wet to the end of the window reports "... then heavy rain indefinitely".
+        assert_eq!(
+            evaluate_forecast_precip(&[light_now.clone(), heavy_later], 1, 1),
+            (
+                true,
+                Some(format!(
+                    "Light rain until {}, then heavy rain indefinitely",
+                    format_local_clock(t_shift)
+                ))
+            )
+        );
+
+        // Prob-only "Rain" inside "Light rain" is not treated as a distinct change.
+        assert_eq!(
+            evaluate_forecast_precip(&[light_now, prob_only_rain, dry_slot(t_same_day)], 1, 1),
+            (
+                true,
+                Some(format!("Light rain until {}", format_local_clock(t_same_day)))
+            )
         );
     }
 }

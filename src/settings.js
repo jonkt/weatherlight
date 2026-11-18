@@ -633,7 +633,9 @@ function renderDiagnosticsWeather(weather, feedId = 'blended') {
         ? precipSummary
             ? `Yes (${escapeHtml(precipSummary)})`
             : 'Yes'
-        : 'No';
+        : precipSummary
+            ? `No (${escapeHtml(precipSummary)})`
+            : 'No';
 
     let feedCompareHtml = '';
     if (hasTabs && activeFeed && activeFeed.id === 'blended') {
@@ -655,16 +657,27 @@ function renderDiagnosticsWeather(weather, feedId = 'blended') {
 
     if (dom.diagForecastTable) {
         dom.diagForecastTable.innerHTML = rows
-            .map(
-                (item) => `
-                <tr style="border-bottom: 1px solid #eee;">
-                    <td style="padding: 4px;">${new Date(item.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+            .map((item) => {
+                const dt = new Date(item.time);
+                const timeLabel = `${dt.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}, ${dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                const typeLabel = item.precipType || 'None';
+                const isNone = typeLabel === 'None';
+                const isLowChance = typeLabel.startsWith('Low chance');
+                const rowBg = (!isNone && !isLowChance) ? 'background-color: #f2f8ff;' : '';
+                const typeStyle = isNone
+                    ? 'color: #999;'
+                    : isLowChance
+                        ? 'color: #888; font-style: italic;'
+                        : 'color: var(--primary); font-weight: 600;';
+                return `
+                <tr style="border-bottom: 1px solid #eee; ${rowBg}">
+                    <td style="padding: 4px;">${timeLabel}</td>
                     <td style="padding: 4px;">${item.temp.toFixed(1)}°</td>
                     <td style="padding: 4px;">${Math.round(item.precipProb)}%</td>
-                    <td style="padding: 4px;">${escapeHtml(item.precipType)}</td>
+                    <td style="padding: 4px; ${typeStyle}">${escapeHtml(typeLabel)}</td>
                 </tr>
-            `
-            )
+            `;
+            })
             .join('');
     }
 }

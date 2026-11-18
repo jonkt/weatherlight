@@ -32,8 +32,8 @@ pub struct WeatherState {
     pub temperature: f64,
     /// `true` if precipitation meets threshold within the configured `precipHorizon`.
     pub has_precipitation: bool,
-    /// Human-readable summary of the first triggered precipitation slot within `precipHorizon`
-    /// (e.g., `"Heavy rain 38% likely at 6:00 PM"` or `"Light rain 60% likely now"`).
+    /// Human-readable 24-hour tooltip/Diagnostics summary of current or upcoming precipitation
+    /// (e.g., `"Light rain starting at 6:00 PM"` or `"Light rain until 5:00 PM"`), independent of `precipHorizon`.
     #[serde(default)]
     pub precip_summary: Option<String>,
     /// Human-readable location label returned by geocoding or IP lookup (e.g., `"Havelock North, ..."`).

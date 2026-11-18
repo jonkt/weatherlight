@@ -53,7 +53,7 @@ graph TD
    - **Lifecycle**: Configures Tauri plugins (`single-instance`, `autostart`, `opener`), intercepts `WindowEvent::CloseRequested` and `RunEvent::ExitRequested` so closing the Settings window hides to the system tray instead of quitting.
    - **Background Scheduler**: Spawns a Tokio task that runs `update_weather_pipeline` immediately at startup and every 15 minutes (`WEATHER_POLL_INTERVAL`), plus on demand when triggered by `"refresh_weather"` or `set_settings`.
    - **IPC Commands**: Exposes 12 `#[tauri::command]` handlers (`get_settings`, `set_settings`, `close_settings`, `detect_location`, `validate_location`, `get_weather_state`, `get_device_info`, `get_busylight_status`, `set_manual_mode`, `apply_manual_state`, `open_external`, `resize_settings`) and emits `"busylight-status"` events whenever hardware status is evaluated.
-   - **Formatting & Control Helpers**: `format_tray_tooltip` (converts internal Celsius to `"C"` or `"F"`, normalizes `-0.0`, and appends `(Precip)` / `(Night)`) and `apply_lighting_target`.
+   - **Formatting & Control Helpers**: `format_tray_tooltip` (builds stacked multi-line text with Location, `Currently <Temp>°<Unit>` with `-0.0` guard, optional precipitation summary/`Precip`, and optional `Night mode`, keeping the total within the 127-UTF-16-unit `NOTIFYICONDATAW` limit so `Night mode` is preserved), `apply_lighting_target`, `apply_weather_state_outputs`, and `sync_scheduled_night_state`.
 
 2. **`color.rs` (Color Scale & Hex Parsing)**
    - Owns the canonical 121-stop `COLOR_SCALE` (`-50.0°C` to `+70.0°C`), `calculate_weather_color` (linear per-channel interpolation with `.round()` clamping), `hex_to_rgb`, and `hex_to_rgba`.
@@ -77,13 +77,14 @@ graph TD
 6. **`weather.rs` (Weather Providers, Smart Blend & Horizons)**
    - Wraps `reqwest::Client` (10-second timeout) with an in-memory `geo_cache` (avoiding repeated manual geocoding API calls across 15-minute polls) for IP geolocation (`ip-api.com`), free-form location geocoding (Open-Meteo and OpenWeatherMap), and weather feeds (`"open-meteo"`, `"openweathermap"`, and `"both"`).
    - In `"both"` (Smart Blend) mode, fetches Open-Meteo (up to 7 days hourly) and OpenWeatherMap (up to 5 days / 40 x 3-hour blocks) concurrently (`tokio::join!`) with automatic failover to whichever provider responds; aligns OWM's live reading and 3-hour blocks onto Open-Meteo's hourly timeline via linear interpolation (`blend_weather_states`), keeping Open-Meteo's days 6–7 directly beyond OWM's 5-day horizon.
-   - Parses upstream sunrise/sunset timestamps into UTC and determines `is_night` via `check_is_night_at` (handling both standard UTC ordering and wrapped UTC midnight intervals such as NZ/AU).
+   - Evaluates `is_night` via `evaluate_night_state`, supporting solar sunrise/sunset (`check_is_night_at`, handling wrapped UTC midnight intervals such as NZ/AU) and user-configured local `"HH:MM"` custom hours (`check_is_custom_night_at`).
    - Evaluates configurable temperature high horizons (`current`, `short_high`, `today_high`, `day_high`) and LED precipitation pulse horizons (`none`, `immediate`, `short`, `today`, `day`) separately from the 24-hour tooltip/Diagnostics precipitation summary (`evaluate_forecast_precip` / `is_precip_triggered`): pulsing respects the user's configured horizon, while `precip_summary` scans up to 24 hours (reporting `"<Label> starting at <Time>[ tomorrow|<Weekday>]"` when upcoming, or scanning across the full multi-day buffer for transitions and clearing via `is_meaningful_precip_change` + `format_relative_clock` when currently precipitating), classifies sub-threshold trace odds (`1%–34%` and `< 0.5 mm/hr`) as `"Low chance of rain"` / `"Low chance of snow"` (`classify_precip_label`), and returns the complete multi-day `debug_forecast` to Diagnostics Mode.
 
 7. **`tray.rs` (System Tray & Dynamic Swatch Icon)**
    - Builds the system tray menu (`Refresh`, `Settings`, `Start with Windows`, `Quit`) via Tauri's tray API. Note that `Quit` calls `std::process::exit(0)` to bypass exit prevention.
    - Syncs OS autostart changes back to `AppConfig` and `config.json`.
    - Generates a 16x16 RGBA swatch (`render_tray_icon_rgba`) with 2px rounded-corner transparency; when Night Mode is active, paints the upper half black with 5 white stars (`NIGHT_STAR_COORDS`).
+   - On Windows, `update_tray_tooltip` also sends a `Shell_NotifyIconW(NIM_MODIFY)` update with explicit `NOTIFYICONDATAW.cbSize` (`encode_wide_sz_tip`) so multi-line tooltips use the full 127-UTF-16-unit buffer instead of being truncated at the legacy 64-WCHAR limit by `tray-icon 0.21.3` (`cbSize = 0`).
 
 ### Frontend (`src/`)
 - **`src/api.js`**: Clean JSDoc-documented `window.api` facade over Tauri's `invoke` and `listen`.

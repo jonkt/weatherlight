@@ -20,10 +20,142 @@ const TRAY_CORNER_RADIUS: f32 = 2.0;
 /// Star coordinates `(x, y)` rendered inside the upper night-mode half (`y < 8`) of the icon.
 const NIGHT_STAR_COORDS: &[(u32, u32)] = &[(2, 2), (8, 1), (13, 3), (5, 5), (11, 6)];
 
+/// Maximum UTF-16 code units permitted before the trailing NUL in Win32 `NOTIFYICONDATAW::szTip`.
+const WIN32_SZ_TIP_MAX_UNITS: usize = 127;
+
+/// Encodes `text` into a NUL-terminated `[u16; 128]` buffer for Win32 `NOTIFYICONDATAW::szTip`.
+///
+/// Caps at 127 UTF-16 code units (leaving index `<= 127` as `0`) and drops any trailing
+/// unpaired UTF-16 high surrogate so valid Unicode boundaries are preserved.
+pub fn encode_wide_sz_tip(text: &str) -> [u16; 128] {
+    let mut buf = [0u16; 128];
+    let mut len = 0usize;
+    for unit in text.encode_utf16().take(WIN32_SZ_TIP_MAX_UNITS) {
+        buf[len] = unit;
+        len += 1;
+    }
+    if len == WIN32_SZ_TIP_MAX_UNITS && (0xD800..=0xDBFF).contains(&buf[len - 1]) {
+        buf[len - 1] = 0;
+    }
+    buf
+}
+
+#[cfg(target_os = "windows")]
+mod win32_tooltip {
+    use core::ffi::c_void;
+    use std::mem::{size_of, zeroed};
+
+    const NIM_MODIFY: u32 = 0x0000_0001;
+    const NIF_TIP: u32 = 0x0000_0004;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Guid {
+        data1: u32,
+        data2: u16,
+        data3: u16,
+        data4: [u8; 8],
+    }
+
+    #[cfg_attr(target_arch = "x86", repr(C, packed(1)))]
+    #[cfg_attr(not(target_arch = "x86"), repr(C))]
+    #[derive(Clone, Copy)]
+    pub(super) struct NotifyIconDataW {
+        cb_size: u32,
+        h_wnd: *mut c_void,
+        u_id: u32,
+        u_flags: u32,
+        u_callback_message: u32,
+        h_icon: *mut c_void,
+        sz_tip: [u16; 128],
+        dw_state: u32,
+        dw_state_mask: u32,
+        sz_info: [u16; 256],
+        u_timeout_or_version: u32,
+        sz_info_title: [u16; 64],
+        dw_info_flags: u32,
+        guid_item: Guid,
+        h_balloon_icon: *mut c_void,
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn FindWindowExW(
+            hwnd_parent: *mut c_void,
+            hwnd_child_after: *mut c_void,
+            lpsz_class: *const u16,
+            lpsz_window: *const u16,
+        ) -> *mut c_void;
+        fn GetWindowThreadProcessId(hwnd: *mut c_void, lpdwprocessid: *mut u32) -> u32;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcessId() -> u32;
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn Shell_NotifyIconW(dw_message: u32, lp_data: *mut NotifyIconDataW) -> i32;
+    }
+
+    /// Re-applies `text` via `Shell_NotifyIconW(NIM_MODIFY)` with `cbSize = size_of::<NotifyIconDataW>()`.
+    ///
+    /// `tray-icon 0.21.3` leaves `NOTIFYICONDATAW.cbSize = 0` via `zeroed()`, which causes Windows Shell
+    /// to interpret `szTip` using the legacy 64-WCHAR ceiling instead of the full 128-WCHAR buffer.
+    pub(super) fn apply_win32_wide_tooltip(text: &str) {
+        let class_name: Vec<u16> = "tray_icon_app\0".encode_utf16().collect();
+        let tip = super::encode_wide_sz_tip(text);
+        let current_pid = unsafe { GetCurrentProcessId() };
+        let mut prev_hwnd: *mut c_void = std::ptr::null_mut();
+
+        for _ in 0..64 {
+            let hwnd = unsafe {
+                FindWindowExW(
+                    std::ptr::null_mut(),
+                    prev_hwnd,
+                    class_name.as_ptr(),
+                    std::ptr::null(),
+                )
+            };
+            if hwnd.is_null() {
+                break;
+            }
+            prev_hwnd = hwnd;
+
+            let mut window_pid: u32 = 0;
+            unsafe { GetWindowThreadProcessId(hwnd, &mut window_pid) };
+            if window_pid != current_pid {
+                continue;
+            }
+
+            // `tray-icon` assigns monotonic `uID` values starting at 1 via `Counter::new()`.
+            for u_id in 1..=4 {
+                let mut nid: NotifyIconDataW = unsafe { zeroed() };
+                nid.cb_size = size_of::<NotifyIconDataW>() as u32;
+                nid.h_wnd = hwnd;
+                nid.u_id = u_id;
+                nid.u_flags = NIF_TIP;
+                nid.sz_tip = tip;
+
+                if unsafe { Shell_NotifyIconW(NIM_MODIFY, &mut nid) } != 0 {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod win32_tooltip {
+    pub(super) fn apply_win32_wide_tooltip(_text: &str) {}
+}
+
 /// Updates the hover tooltip string of the `"main"` system tray icon.
 pub fn update_tray_tooltip(app_handle: &AppHandle, text: &str) {
     if let Some(tray) = app_handle.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(text));
+        win32_tooltip::apply_win32_wide_tooltip(text);
     }
 }
 
@@ -116,6 +248,8 @@ pub fn create_tray(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Err
             _ => {}
         })
         .build(app_handle)?;
+
+    win32_tooltip::apply_win32_wide_tooltip("WeatherLight");
 
     Ok(())
 }
@@ -234,5 +368,36 @@ mod tests {
 
         // Bottom half preserves the temperature color swatch.
         assert_eq!(pixel_at(&buf, width, 8, 12), [0, 255, 19, 255]);
+    }
+
+    #[test]
+    fn test_encode_wide_sz_tip_caps_at_127_plus_nul() {
+        let short = "Havelock North\nCurrently 14°C\nNight mode";
+        let buf = encode_wide_sz_tip(short);
+        let decoded_len = buf.iter().position(|&u| u == 0).unwrap();
+        assert_eq!(
+            String::from_utf16(&buf[..decoded_len]).unwrap(),
+            short
+        );
+
+        // Input > 127 UTF-16 code units must still keep NUL at buf[127] and no unpaired surrogate.
+        let over_surrogate = format!("{}😀tail", "a".repeat(126));
+        let buf_over = encode_wide_sz_tip(&over_surrogate);
+        assert_eq!(buf_over[127], 0);
+        let nul_pos = buf_over.iter().position(|&u| u == 0).unwrap();
+        assert_eq!(nul_pos, 126);
+        assert_eq!(
+            String::from_utf16(&buf_over[..nul_pos]).unwrap(),
+            "a".repeat(126)
+        );
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn test_win32_notifyicondataw_size_matches_sdk_x64() {
+        assert_eq!(
+            std::mem::size_of::<super::win32_tooltip::NotifyIconDataW>(),
+            976
+        );
     }
 }

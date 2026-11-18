@@ -76,6 +76,11 @@ function initializeApp() {
         maxBrightness: document.getElementById('maxBrightness'),
         maxBrightnessValue: document.getElementById('maxBrightnessValue'),
         sunsetSunrise: document.getElementById('sunsetSunrise'),
+        nightScheduleContainer: document.getElementById('nightScheduleContainer'),
+        nightModeSunset: document.getElementById('nightModeSunset'),
+        nightModeCustom: document.getElementById('nightModeCustom'),
+        nightStartTime: document.getElementById('nightStartTime'),
+        nightEndTime: document.getElementById('nightEndTime'),
         sunTimes: document.getElementById('sunTimes'),
 
         // Footer & actions
@@ -184,6 +189,27 @@ function updateUIState() {
     const precipHorizonVal = dom.precipHorizon.value || 'none';
     dom.pulseSpeedContainer.style.display = precipHorizonVal !== 'none' ? 'block' : 'none';
 
+    const scheduleEnabled = dom.sunsetSunrise.checked;
+    const nightModeType =
+        document.querySelector('input[name="nightModeType"]:checked')?.value || 'sunset';
+    const isCustomSchedule = nightModeType === 'custom';
+    const hardwareDisconnected = dom.sunsetSunrise.disabled;
+
+    if (dom.nightScheduleContainer) {
+        dom.nightScheduleContainer.style.display = scheduleEnabled ? 'flex' : 'none';
+    }
+    if (dom.sunTimes) {
+        dom.sunTimes.style.display =
+            scheduleEnabled && !isCustomSchedule && dom.sunTimes.innerHTML.trim()
+                ? 'flex'
+                : 'none';
+    }
+    if (dom.nightStartTime && dom.nightEndTime) {
+        const disableTimes = hardwareDisconnected || !scheduleEnabled || !isCustomSchedule;
+        dom.nightStartTime.disabled = disableTimes;
+        dom.nightEndTime.disabled = disableTimes;
+    }
+
     const isAuto = dom.autoLocation.checked;
     dom.location.disabled = isAuto;
 
@@ -263,6 +289,13 @@ function populateFormFromSettings(settings, weather) {
     dom.maxBrightnessValue.textContent = `${dom.maxBrightness.value}%`;
 
     dom.sunsetSunrise.checked = Boolean(settings.sunsetSunrise);
+    const nightModeType = settings.nightModeType === 'custom' ? 'custom' : 'sunset';
+    const nightModeRadio = document.querySelector(
+        `input[name="nightModeType"][value="${nightModeType}"]`,
+    );
+    if (nightModeRadio) nightModeRadio.checked = true;
+    dom.nightStartTime.value = settings.nightStartTime || '22:00';
+    dom.nightEndTime.value = settings.nightEndTime || '07:00';
     dom.tempHorizon.value = settings.tempHorizon || 'current';
     dom.precipHorizon.value = settings.precipHorizon || 'immediate';
 
@@ -287,6 +320,10 @@ async function saveCurrentSettings() {
         pulseSpeed: Math.round(parseFloat(dom.pulseSpeed.value) * 1000),
         maxBrightness: parseInt(dom.maxBrightness.value, 10),
         sunsetSunrise: dom.sunsetSunrise.checked,
+        nightModeType:
+            document.querySelector('input[name="nightModeType"]:checked')?.value || 'sunset',
+        nightStartTime: dom.nightStartTime.value || '22:00',
+        nightEndTime: dom.nightEndTime.value || '07:00',
         tempHorizon: dom.tempHorizon.value,
         precipHorizon: dom.precipHorizon.value,
     };
@@ -424,7 +461,23 @@ function attachSettingsListeners() {
         markDirty();
     });
 
-    dom.sunsetSunrise.addEventListener('change', markDirty);
+    dom.sunsetSunrise.addEventListener('change', () => {
+        updateUIState();
+        markDirty();
+    });
+
+    document.querySelectorAll('input[name="nightModeType"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+            updateUIState();
+            markDirty();
+        });
+    });
+
+    [dom.nightStartTime, dom.nightEndTime].forEach((input) => {
+        if (!input) return;
+        input.addEventListener('input', markDirty);
+        input.addEventListener('change', markDirty);
+    });
 
     dom.apiKeyHelpIcon.addEventListener('click', (e) => {
         e.preventDefault();
@@ -485,6 +538,8 @@ function updateHardwareStatus(connected) {
         dom.pulseSpeed,
         dom.maxBrightness,
         dom.sunsetSunrise,
+        dom.nightModeSunset,
+        dom.nightModeCustom,
     ];
 
     hardwareInputs.forEach((el) => {
@@ -518,7 +573,7 @@ function updateHardwareStatus(connected) {
         }
     }
 
-    syncWindowSize();
+    updateUIState();
 }
 
 /**
@@ -536,7 +591,7 @@ async function updateSunTimes() {
         dom.sunTimes.innerHTML =
             `<span>Next sunset: <strong>${nextSunset}</strong></span>` +
             `<span>Next sunrise: <strong>${nextSunrise}</strong></span>`;
-        syncWindowSize();
+        updateUIState();
     }
 }
 

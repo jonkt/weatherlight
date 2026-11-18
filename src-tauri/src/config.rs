@@ -36,8 +36,14 @@ pub struct AppConfig {
     pub pulse_speed: u64,
     /// Maximum hardware LED brightness percentage (`0..=100`, default `60`).
     pub max_brightness: u8,
-    /// Enables dimming and starry tray indicator between local sunset and sunrise.
+    /// Enables dimming and starry tray indicator on the configured off-hours schedule.
     pub sunset_sunrise: bool,
+    /// Schedule type for turning off the light: `"sunset"` or `"custom"`.
+    pub night_mode_type: String,
+    /// Custom schedule turn-off time in 24-hour `"HH:MM"` local time.
+    pub night_start_time: String,
+    /// Custom schedule turn-on time in 24-hour `"HH:MM"` local time.
+    pub night_end_time: String,
     /// Temperature lookahead mode: `"current"`, `"short_high"`, `"today_high"`, or `"day_high"`.
     pub temp_horizon: String,
     /// Precipitation lookahead mode: `"immediate"`, `"short"`, `"today"`, `"day"`, or `"none"`.
@@ -57,6 +63,9 @@ impl Default for AppConfig {
             pulse_speed: 5000,
             max_brightness: 60,
             sunset_sunrise: false,
+            night_mode_type: "sunset".to_string(),
+            night_start_time: "22:00".to_string(),
+            night_end_time: "07:00".to_string(),
             temp_horizon: "current".to_string(),
             precip_horizon: "immediate".to_string(),
         }
@@ -134,6 +143,9 @@ mod tests {
         assert_eq!(cfg.pulse_speed, 5000);
         assert_eq!(cfg.max_brightness, 60);
         assert!(!cfg.sunset_sunrise);
+        assert_eq!(cfg.night_mode_type, "sunset");
+        assert_eq!(cfg.night_start_time, "22:00");
+        assert_eq!(cfg.night_end_time, "07:00");
         assert_eq!(cfg.temp_horizon, "current");
         assert_eq!(cfg.precip_horizon, "immediate");
     }
@@ -145,12 +157,18 @@ mod tests {
         cfg.unit = "F".to_string();
         cfg.auto_start = true;
         cfg.max_brightness = 85;
+        cfg.night_mode_type = "custom".to_string();
+        cfg.night_start_time = "21:30".to_string();
+        cfg.night_end_time = "06:45".to_string();
         cfg.temp_horizon = "today_high".to_string();
 
         let json = serde_json::to_string(&cfg).expect("serialize AppConfig");
         assert!(json.contains("\"autoLocation\""));
         assert!(json.contains("\"autoStart\":true"));
         assert!(json.contains("\"maxBrightness\":85"));
+        assert!(json.contains("\"nightModeType\":\"custom\""));
+        assert!(json.contains("\"nightStartTime\":\"21:30\""));
+        assert!(json.contains("\"nightEndTime\":\"06:45\""));
         assert!(json.contains("\"tempHorizon\":\"today_high\""));
 
         let decoded: AppConfig = serde_json::from_str(&json).expect("deserialize AppConfig");

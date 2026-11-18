@@ -270,6 +270,8 @@ pub fn run() {
                         first_run = false;
                         last_fetch = std::time::Instant::now();
                         update_weather_pipeline(&app_handle).await;
+                    } else {
+                        sync_scheduled_night_state(&app_handle);
                     }
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
@@ -314,13 +316,51 @@ pub fn run() {
 // Weather Pipeline & Formatting Helpers
 // ============================================================================
 
-/// Formats the system tray hover tooltip (`"<City>: <Temp>°<Unit> [(<Precip Alert>)] [(Night)]"`).
+/// Maximum UTF-16 code units allowed in a Windows system tray tooltip (`NOTIFYICONDATAW::szTip` minus NUL).
+const MAX_TRAY_TOOLTIP_UTF16: usize = 127;
+
+/// Truncates `text` cleanly to at most `max_units` UTF-16 code units, appending `"..."` when shortened.
+fn truncate_utf16_with_ellipsis(text: &str, max_units: usize) -> String {
+    if text.encode_utf16().count() <= max_units {
+        return text.to_string();
+    }
+    if max_units <= 3 {
+        let mut out = String::new();
+        let mut used = 0;
+        for ch in text.chars() {
+            let u = ch.len_utf16();
+            if used + u > max_units {
+                break;
+            }
+            out.push(ch);
+            used += u;
+        }
+        return out;
+    }
+
+    let cap = max_units - 3;
+    let mut prefix = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let u = ch.len_utf16();
+        if used + u > cap {
+            break;
+        }
+        prefix.push(ch);
+        used += u;
+    }
+    let trimmed = prefix.trim_end_matches(|c: char| c.is_whitespace() || c == ',');
+    format!("{}...", trimmed)
+}
+
+/// Formats the stacked system tray hover tooltip (`"<City>\nCurrently <Temp>°<Unit>[\n<Precip>][\nNight mode]"`).
 ///
 /// Uses `weather.precip_summary` whenever precipitation is active now or within the next 24 hours
 /// (e.g., `"Light rain until 5:00 PM"` or `"Light rain starting at 6:00 PM"`), independent of the LED
 /// pulse trigger horizon, falling back to `"Precip"` only when pulsing without a summary.
-/// Converts Celsius `weather.temperature` into `config.unit` (`"C"` or `"F"`) before rounding
-/// and normalizes `-0.0` so freezing transitions near zero never display `"-0°C"`.
+/// Converts Celsius `weather.temperature` into `config.unit` (`"C"` or `"F"`) before rounding,
+/// normalizes `-0.0` so freezing transitions near zero never display `"-0°C"`, and keeps the joined
+/// tooltip within the 127-UTF-16-unit Windows `szTip` ceiling so `"Night mode"` is never truncated.
 pub fn format_tray_tooltip(weather: &WeatherState, config: &AppConfig) -> String {
     let display_temp = config.format_temperature(weather.temperature).round() + 0.0;
     let is_night_mode = config.sunset_sunrise && weather.is_night;
@@ -328,18 +368,41 @@ pub fn format_tray_tooltip(weather: &WeatherState, config: &AppConfig) -> String
         .location_name
         .split(',')
         .next()
-        .unwrap_or(&weather.location_name);
+        .unwrap_or(&weather.location_name)
+        .trim();
 
-    let mut tooltip = format!("{}: {}°{}", short_location, display_temp, config.unit);
-    if let Some(detail) = weather.precip_summary.as_deref() {
-        tooltip.push_str(&format!(" ({})", detail));
+    let loc_line = short_location.to_string();
+    let temp_line = format!("Currently {}°{}", display_temp, config.unit);
+    let precip_line = if let Some(detail) = weather.precip_summary.as_deref() {
+        Some(detail.to_string())
     } else if weather.has_precipitation {
-        tooltip.push_str(" (Precip)");
+        Some("Precip".to_string())
+    } else {
+        None
+    };
+
+    let build = |precip: Option<&str>| {
+        let mut lines = vec![loc_line.as_str(), temp_line.as_str()];
+        if let Some(p) = precip {
+            lines.push(p);
+        }
+        if is_night_mode {
+            lines.push("Night mode");
+        }
+        lines.join("\n")
+    };
+
+    if let Some(detail) = precip_line {
+        let full = build(Some(&detail));
+        if full.encode_utf16().count() <= MAX_TRAY_TOOLTIP_UTF16 {
+            return full;
+        }
+        let fixed_units = build(None).encode_utf16().count() + 1; // +1 for extra '\n' before precip line
+        let budget = MAX_TRAY_TOOLTIP_UTF16.saturating_sub(fixed_units);
+        return build(Some(&truncate_utf16_with_ellipsis(&detail, budget)));
     }
-    if is_night_mode {
-        tooltip.push_str(" (Night)");
-    }
-    tooltip
+
+    build(None)
 }
 
 /// Applies either a solid brightness-scaled color or a breathing pulse to the Busylight.
@@ -366,9 +429,73 @@ fn apply_lighting_target(
     }
 }
 
+/// Updates tray tooltip, tray icon, and hardware LEDs from `weather` and `config`.
+fn apply_weather_state_outputs(
+    app: &AppHandle,
+    state: &AppState,
+    config: &AppConfig,
+    weather: &WeatherState,
+) {
+    let is_night_mode = config.sunset_sunrise && weather.is_night;
+    let hex_color = calculate_weather_color(weather.temperature);
+    tray::update_tray_icon(app, &hex_color, is_night_mode);
+
+    // Apply tooltip after icon updates so the 128-WCHAR `NOTIFYICONDATAW` modification is last.
+    let tooltip = format_tray_tooltip(weather, config);
+    tray::update_tray_tooltip(app, &tooltip);
+
+    if !state.busylight.is_manual_mode() {
+        if is_night_mode || hex_color == "#000000" {
+            state.busylight.set_solid(0, 0, 0);
+        } else {
+            apply_lighting_target(
+                &state.busylight,
+                &hex_color,
+                weather.has_precipitation && config.pulse,
+                config.max_brightness,
+                config.pulse_speed,
+            );
+        }
+    }
+}
+
 /// Broadcasts current USB HID connection state to any open Settings/Diagnostics WebView.
 fn emit_busylight_status(app: &AppHandle, busylight: &BusylightController) {
     let _ = app.emit("busylight-status", busylight.is_connected());
+}
+
+/// Re-evaluates the scheduled off-hours state on idle ticks so custom and solar transitions apply promptly.
+fn sync_scheduled_night_state(app: &AppHandle) {
+    let state: State<'_, AppState> = app.state();
+    let config = state.config.lock().unwrap().clone();
+    if !config.sunset_sunrise {
+        return;
+    }
+
+    let updated = {
+        let Ok(mut guard) = state.weather_state.lock() else {
+            return;
+        };
+        let Some(weather) = guard.as_mut() else {
+            return;
+        };
+        let new_is_night = crate::weather::evaluate_night_state(
+            &config,
+            &weather.sun_times,
+            chrono::Utc::now(),
+            chrono::Local::now().time(),
+        );
+        if new_is_night == weather.is_night {
+            None
+        } else {
+            weather.is_night = new_is_night;
+            Some(weather.clone())
+        }
+    };
+
+    if let Some(weather) = updated {
+        apply_weather_state_outputs(app, &state, &config, &weather);
+    }
 }
 
 /// End-to-end weather update pass: fetches forecast, updates tray UI, and drives hardware LEDs.
@@ -386,26 +513,7 @@ async fn update_weather_pipeline(app: &AppHandle) {
 
     match state.weather_svc.fetch(&config).await {
         Ok(weather) => {
-            let is_night_mode = config.sunset_sunrise && weather.is_night;
-            let tooltip = format_tray_tooltip(&weather, &config);
-            tray::update_tray_tooltip(app, &tooltip);
-
-            let hex_color = calculate_weather_color(weather.temperature);
-            tray::update_tray_icon(app, &hex_color, is_night_mode);
-
-            if !state.busylight.is_manual_mode() {
-                if is_night_mode || hex_color == "#000000" {
-                    state.busylight.set_solid(0, 0, 0);
-                } else {
-                    apply_lighting_target(
-                        &state.busylight,
-                        &hex_color,
-                        weather.has_precipitation && config.pulse,
-                        config.max_brightness,
-                        config.pulse_speed,
-                    );
-                }
-            }
+            apply_weather_state_outputs(app, &state, &config, &weather);
 
             if let Ok(mut ws) = state.weather_state.lock() {
                 *ws = Some(weather);
@@ -453,7 +561,10 @@ mod tests {
     fn test_format_tray_tooltip_celsius_and_fahrenheit() {
         let mut cfg = AppConfig::default();
         let ws = sample_weather(20.4, false, None, false);
-        assert_eq!(format_tray_tooltip(&ws, &cfg), "Havelock North: 20°C");
+        assert_eq!(
+            format_tray_tooltip(&ws, &cfg),
+            "Havelock North\nCurrently 20°C"
+        );
 
         // Fahrenheit regression test + detailed precipitation summary formatting.
         cfg.unit = "F".to_string();
@@ -463,24 +574,33 @@ mod tests {
             Some("Heavy rain 38% likely at 6:00 PM"),
             true,
         );
-        // `sunset_sunrise` is false by default, so "(Night)" must not appear yet.
+        // `sunset_sunrise` is false by default, so "Night mode" must not appear yet.
         assert_eq!(
             format_tray_tooltip(&ws_f, &cfg),
-            "Havelock North: 68°F (Heavy rain 38% likely at 6:00 PM)"
+            "Havelock North\nCurrently 68°F\nHeavy rain 38% likely at 6:00 PM"
         );
 
         cfg.sunset_sunrise = true;
         assert_eq!(
             format_tray_tooltip(&ws_f, &cfg),
-            "Havelock North: 68°F (Heavy rain 38% likely at 6:00 PM) (Night)"
+            "Havelock North\nCurrently 68°F\nHeavy rain 38% likely at 6:00 PM\nNight mode"
         );
 
-        // Fallback to "(Precip)" if `precip_summary` is missing while `has_precipitation` is true.
+        // Night mode without precipitation omits any blank third line.
+        let ws_night_clear = sample_weather(14.0, false, None, true);
+        cfg.unit = "C".to_string();
+        assert_eq!(
+            format_tray_tooltip(&ws_night_clear, &cfg),
+            "Havelock North\nCurrently 14°C\nNight mode"
+        );
+
+        // Fallback to "Precip" if `precip_summary` is missing while `has_precipitation` is true.
+        cfg.unit = "F".to_string();
         let ws_fallback = sample_weather(20.0, true, None, false);
         cfg.sunset_sunrise = false;
         assert_eq!(
             format_tray_tooltip(&ws_fallback, &cfg),
-            "Havelock North: 68°F (Precip)"
+            "Havelock North\nCurrently 68°F\nPrecip"
         );
 
         // Tooltip still displays upcoming 24h precipitation even when `has_precipitation` is false
@@ -488,12 +608,44 @@ mod tests {
         let ws_future_only = sample_weather(20.0, false, Some("Light rain starting at 6:00 PM"), false);
         assert_eq!(
             format_tray_tooltip(&ws_future_only, &cfg),
-            "Havelock North: 68°F (Light rain starting at 6:00 PM)"
+            "Havelock North\nCurrently 68°F\nLight rain starting at 6:00 PM"
         );
 
         // Near-zero negative temperatures must format as "0°C", never "-0°C".
         cfg.unit = "C".to_string();
         let ws_zero = sample_weather(-0.2, false, None, false);
-        assert_eq!(format_tray_tooltip(&ws_zero, &cfg), "Havelock North: 0°C");
+        assert_eq!(
+            format_tray_tooltip(&ws_zero, &cfg),
+            "Havelock North\nCurrently 0°C"
+        );
+
+        // Multi-line tooltips exceeding the legacy 64-WCHAR ceiling stay intact when <= 127 UTF-16 units.
+        cfg.sunset_sunrise = true;
+        let ws_long = sample_weather(
+            14.0,
+            true,
+            Some("Light rain until 2:00 AM tomorrow, then heavy rain until 6:00 AM tomorrow"),
+            true,
+        );
+        let tip_long = format_tray_tooltip(&ws_long, &cfg);
+        assert_eq!(
+            tip_long,
+            "Havelock North\nCurrently 14°C\nLight rain until 2:00 AM tomorrow, then heavy rain until 6:00 AM tomorrow\nNight mode"
+        );
+        assert!(tip_long.encode_utf16().count() > 64);
+        assert!(tip_long.encode_utf16().count() <= 127);
+
+        // Extremely long summaries exceeding 127 UTF-16 units truncate only Line 3 so Line 4 stays intact.
+        let mut ws_over = sample_weather(
+            14.0,
+            true,
+            Some("Light rain until 2:00 AM tomorrow, then moderate rain continuing well past breakfast tomorrow"),
+            true,
+        );
+        ws_over.location_name = "Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch, Wales".to_string();
+        let tip_over = format_tray_tooltip(&ws_over, &cfg);
+        assert!(tip_over.encode_utf16().count() <= 127);
+        assert!(tip_over.ends_with("\nNight mode"));
+        assert!(tip_over.contains("...\nNight mode"));
     }
 }

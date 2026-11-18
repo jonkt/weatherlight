@@ -18,7 +18,7 @@ use crate::models::{
     ForecastItem, LocationDetectResult, LocationValidationResult, ProviderFeedSnapshot, SunTimes,
     WeatherState,
 };
-use chrono::{DateTime, Local, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Local, NaiveTime, TimeZone, Timelike, Utc};
 use reqwest::Client;
 use std::time::Duration;
 
@@ -78,6 +78,52 @@ pub fn check_is_night_at(sun_times: &SunTimes, now_utc: DateTime<Utc>) -> bool {
         // Wrapped UTC daylight span (e.g., 17:30 sunrise -> 07:15 sunset):
         // night is the contiguous interval strictly between sunset and sunrise.
         now_time < sr_time && now_time > ss_time
+    }
+}
+
+/// Parses a 24-hour `"HH:MM"` clock string into a `NaiveTime`.
+pub fn parse_hhmm_time(raw: &str) -> Option<NaiveTime> {
+    NaiveTime::parse_from_str(raw.trim(), "%H:%M").ok()
+}
+
+/// Determines whether `now_local` falls within a user-configured `[start_str, end_str)` off window.
+///
+/// Supports both overnight intervals crossing midnight (e.g., `22:00` to `07:00`) and
+/// same-day intervals (e.g., `13:00` to `16:00`). Equal start/end times or malformed strings
+/// return `false` so the light fails safe to active rather than stuck off.
+pub fn check_is_custom_night_at(
+    start_str: &str,
+    end_str: &str,
+    now_local: NaiveTime,
+) -> bool {
+    let (Some(start), Some(end)) = (parse_hhmm_time(start_str), parse_hhmm_time(end_str)) else {
+        return false;
+    };
+
+    if start == end {
+        return false;
+    }
+
+    if start > end {
+        // Overnight window wrapping past midnight: off at start..24:00 and 00:00..end.
+        now_local >= start || now_local < end
+    } else {
+        // Same-day window: off at start..end.
+        now_local >= start && now_local < end
+    }
+}
+
+/// Evaluates whether the scheduled light-off state is currently active for `config`.
+pub fn evaluate_night_state(
+    config: &AppConfig,
+    sun_times: &SunTimes,
+    now_utc: DateTime<Utc>,
+    now_local: NaiveTime,
+) -> bool {
+    if config.night_mode_type == "custom" {
+        check_is_custom_night_at(&config.night_start_time, &config.night_end_time, now_local)
+    } else {
+        check_is_night_at(sun_times, now_utc)
     }
 }
 
@@ -242,10 +288,14 @@ fn is_meaningful_precip_change(current_label: &str, next_label: &str) -> bool {
     {
         return false;
     }
-    if next_label == "Rain" && current_label.ends_with("rain") {
+    if (next_label == "Rain" && current_label.ends_with("rain"))
+        || (current_label == "Rain" && next_label == "Light rain")
+    {
         return false;
     }
-    if next_label == "Snow" && current_label.ends_with("snow") {
+    if (next_label == "Snow" && current_label.ends_with("snow"))
+        || (current_label == "Snow" && next_label == "Light snow")
+    {
         return false;
     }
     true
@@ -500,7 +550,7 @@ pub fn blend_weather_states(
         sunrise: owm.sun_times.sunrise.or(om.sun_times.sunrise),
         sunset: owm.sun_times.sunset.or(om.sun_times.sunset),
     };
-    let is_night = check_is_night_at(&sun_times, Utc::now());
+    let is_night = evaluate_night_state(config, &sun_times, Utc::now(), Local::now().time());
 
     let owm_horizon_end = owm
         .debug_forecast
@@ -942,11 +992,6 @@ impl WeatherService {
         }
     }
 
-    /// Convenience wrapper evaluating night mode against `Utc::now()`.
-    fn check_is_night(&self, sun_times: &SunTimes) -> bool {
-        check_is_night_at(sun_times, Utc::now())
-    }
-
     /// Fetches current conditions and 3-hour forecasts from OpenWeatherMap and normalizes them.
     pub async fn fetch_openweathermap(
         &self,
@@ -1058,7 +1103,8 @@ impl WeatherService {
         let (has_precipitation, precip_summary) =
             evaluate_forecast_precip(&debug_forecast, precip_blocks, 3);
 
-        let is_night = self.check_is_night(&sun_times);
+        let is_night =
+            evaluate_night_state(config, &sun_times, Utc::now(), Local::now().time());
         Ok(WeatherState {
             temperature,
             has_precipitation,
@@ -1210,7 +1256,8 @@ impl WeatherService {
         let (has_precipitation, precip_summary) =
             evaluate_forecast_precip(&debug_forecast, precip_hours, 1);
 
-        let is_night = self.check_is_night(&sun_times);
+        let is_night =
+            evaluate_night_state(config, &sun_times, Utc::now(), Local::now().time());
         Ok(WeatherState {
             temperature,
             has_precipitation,
@@ -1757,5 +1804,97 @@ mod tests {
                 Some(format!("Light rain until {}", format_local_clock(t_same_day)))
             )
         );
+
+        // Likewise, prob-only "Rain" followed by "Light rain" does not emit "Rain until ..., then light rain".
+        let prob_now = ForecastItem {
+            time: t0,
+            temp: 14.0,
+            precip_prob: 50.0,
+            precip_type: "Rain".to_string(),
+            rain_mm_hr: 0.0,
+            snow_mm_hr: 0.0,
+        };
+        let light_later = ForecastItem {
+            time: t1,
+            temp: 14.0,
+            precip_prob: 70.0,
+            precip_type: "Light rain".to_string(),
+            rain_mm_hr: 0.8,
+            snow_mm_hr: 0.0,
+        };
+        let heavy_escalation = ForecastItem {
+            time: t_shift,
+            temp: 14.0,
+            precip_prob: 90.0,
+            precip_type: "Heavy rain".to_string(),
+            rain_mm_hr: 9.0,
+            snow_mm_hr: 0.0,
+        };
+        assert_eq!(
+            evaluate_forecast_precip(
+                &[prob_now.clone(), light_later, dry_slot(t_same_day)],
+                1,
+                1
+            ),
+            (
+                true,
+                Some(format!("Rain until {}", format_local_clock(t_same_day)))
+            )
+        );
+
+        // Prob-only "Rain" escalating to "Heavy rain" still alerts on the intensification.
+        assert_eq!(
+            evaluate_forecast_precip(&[prob_now, heavy_escalation, dry_slot(t_same_day)], 1, 1),
+            (
+                true,
+                Some(format!(
+                    "Rain until {}, then heavy rain until {}",
+                    format_local_clock(t_shift),
+                    format_local_clock(t_same_day)
+                ))
+            )
+        );
+    }
+
+    #[test]
+    fn test_check_is_custom_night_overnight_and_daytime() {
+        let t = |h: u32, m: u32| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+
+        // Overnight range wrapping past midnight (`22:00` .. `07:00`).
+        assert!(!check_is_custom_night_at("22:00", "07:00", t(21, 59)));
+        assert!(check_is_custom_night_at("22:00", "07:00", t(22, 0)));
+        assert!(check_is_custom_night_at("22:00", "07:00", t(23, 30)));
+        assert!(check_is_custom_night_at("22:00", "07:00", t(0, 0)));
+        assert!(check_is_custom_night_at("22:00", "07:00", t(6, 59)));
+        assert!(!check_is_custom_night_at("22:00", "07:00", t(7, 0)));
+        assert!(!check_is_custom_night_at("22:00", "07:00", t(12, 0)));
+
+        // Same-day range (`09:00` .. `17:00`).
+        assert!(!check_is_custom_night_at("09:00", "17:00", t(8, 59)));
+        assert!(check_is_custom_night_at("09:00", "17:00", t(9, 0)));
+        assert!(check_is_custom_night_at("09:00", "17:00", t(12, 30)));
+        assert!(!check_is_custom_night_at("09:00", "17:00", t(17, 0)));
+        assert!(!check_is_custom_night_at("09:00", "17:00", t(20, 0)));
+
+        // Degenerate or malformed inputs fail safe to `false` (keep light active).
+        assert!(!check_is_custom_night_at("22:00", "22:00", t(22, 0)));
+        assert!(!check_is_custom_night_at("bad", "07:00", t(23, 0)));
+        assert!(!check_is_custom_night_at("22:00", "", t(23, 0)));
+
+        // `evaluate_night_state` routes cleanly between `"sunset"` and `"custom"`.
+        let standard_sun = SunTimes {
+            sunrise: Some(Utc.with_ymd_and_hms(2026, 11, 15, 6, 0, 0).unwrap()),
+            sunset: Some(Utc.with_ymd_and_hms(2026, 11, 15, 18, 0, 0).unwrap()),
+        };
+        let daytime_utc = Utc.with_ymd_and_hms(2026, 11, 15, 12, 0, 0).unwrap();
+
+        let mut cfg = AppConfig::default();
+        assert!(!evaluate_night_state(&cfg, &standard_sun, daytime_utc, t(23, 0)));
+
+        cfg.night_mode_type = "custom".to_string();
+        cfg.night_start_time = "22:00".to_string();
+        cfg.night_end_time = "07:00".to_string();
+        assert!(evaluate_night_state(&cfg, &standard_sun, daytime_utc, t(23, 0)));
+        assert!(!evaluate_night_state(&cfg, &standard_sun, daytime_utc, t(12, 0)));
     }
 }

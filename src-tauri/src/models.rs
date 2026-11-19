@@ -40,7 +40,7 @@ pub struct WeatherState {
     pub location_name: String,
     /// UTC sunrise/sunset timestamps used for night-mode detection and settings display.
     pub sun_times: SunTimes,
-    /// `true` when the location's current UTC time falls outside the sunrise..sunset daylight window.
+    /// `true` when the active schedule (sunrise..sunset or custom off-hours) is currently in effect.
     pub is_night: bool,
     /// Friendly name of the provider that produced this snapshot
     /// (`"Open-Meteo"`, `"OpenWeatherMap"`, or `"Combined (Open-Meteo + OWM)"`).

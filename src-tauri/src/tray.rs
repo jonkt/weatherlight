@@ -1,8 +1,8 @@
 //! System tray icon creation, menu event handling, and dynamic icon rendering.
 //!
 //! WeatherLight renders a 16x16 rounded-square color swatch in the OS notification area
-//! corresponding to the active temperature. When Night Mode is active (sunset..sunrise),
-//! the upper half of the swatch transitions to a starry black sky overlay.
+//! corresponding to the active temperature. When Night Mode is active (sunset..sunrise or custom
+//! off-hours), the upper half of the swatch transitions to a starry black sky overlay.
 
 use crate::color::hex_to_rgba;
 use image::{ImageBuffer, Rgba};

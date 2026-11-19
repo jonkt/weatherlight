@@ -51,7 +51,7 @@ graph TD
 
 1. **`lib.rs` (Application Orchestrator & IPC Bridge)**
    - **Lifecycle**: Configures Tauri plugins (`single-instance`, `autostart`, `opener`), intercepts `WindowEvent::CloseRequested` and `RunEvent::ExitRequested` so closing the Settings window hides to the system tray instead of quitting.
-   - **Background Scheduler**: Spawns a Tokio task that runs `update_weather_pipeline` immediately at startup and every 15 minutes (`WEATHER_POLL_INTERVAL`), plus on demand when triggered by `"refresh_weather"` or `set_settings`.
+   - **Background Scheduler**: Spawns a Tokio task that runs `update_weather_pipeline` immediately at startup and every 15 minutes (`WEATHER_POLL_INTERVAL`), plus on demand when triggered by `"refresh_weather"` or `set_settings`, while idle 1-second ticks run `sync_scheduled_night_state` so sunset/sunrise and custom off-hour transitions apply promptly.
    - **IPC Commands**: Exposes 12 `#[tauri::command]` handlers (`get_settings`, `set_settings`, `close_settings`, `detect_location`, `validate_location`, `get_weather_state`, `get_device_info`, `get_busylight_status`, `set_manual_mode`, `apply_manual_state`, `open_external`, `resize_settings`) and emits `"busylight-status"` events whenever hardware status is evaluated.
    - **Formatting & Control Helpers**: `format_tray_tooltip` (builds stacked multi-line text with Location, `Currently <Temp>°<Unit>` with `-0.0` guard, optional precipitation summary/`Precip`, and optional `Night mode`, keeping the total within the 127-UTF-16-unit `NOTIFYICONDATAW` limit so `Night mode` is preserved), `apply_lighting_target`, `apply_weather_state_outputs`, and `sync_scheduled_night_state`.
 
